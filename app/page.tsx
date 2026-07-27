@@ -398,6 +398,23 @@ export default function Home() {
           </div>
         </div>
 
+        <section className="market-prices" aria-label="Live Polymarket outcome prices">
+          <article className="outcome-price up-price">
+            <div>
+              <span className="outcome-label"><i /> UP price</span>
+              <strong>{live ? `${(live.upAsk * 100).toFixed(1)}¢` : "—"}</strong>
+            </div>
+            <small>{live ? `${pct(live.upAsk)} implied · ${((live.upBid) * 100).toFixed(1)}¢ bid` : "Waiting for live market"}</small>
+          </article>
+          <article className="outcome-price down-price">
+            <div>
+              <span className="outcome-label"><i /> DOWN price</span>
+              <strong>{live ? `${(live.downAsk * 100).toFixed(1)}¢` : "—"}</strong>
+            </div>
+            <small>{live ? `${pct(live.downAsk)} implied · ${((live.downBid) * 100).toFixed(1)}¢ bid` : "Waiting for live market"}</small>
+          </article>
+        </section>
+
         <section className="metrics">
           <article><span>Persistent balance</span><strong>{money(bankroll)}</strong><small>{money(stats.realized_pnl)} realized · {stats.open_count} open</small></article>
           <article><span>Fixed bet size</span><strong>$5.00</strong><small>{Math.floor(bankroll / 5)} bets remaining</small></article>
