@@ -14,8 +14,21 @@ type Bet = {
   edge: number;
   status: "OPEN" | "WON" | "LOST" | "EXITED" | "VOID";
   settlement_outcome: string | null;
+  payout: number | null;
   pnl: number | null;
   placed_at: number;
+  settled_at: number | null;
+};
+type TransactionFilter = "all" | "buy" | "sell";
+type ShareTransaction = {
+  id: string;
+  action: "BUY" | "SELL";
+  time: number;
+  side: Side;
+  shares: number;
+  price: number;
+  cashFlow: number;
+  description: string;
 };
 type LiveMarket = {
   conditionId: string;
@@ -63,7 +76,7 @@ export default function Home() {
   const [recoveringBetId, setRecoveringBetId] = useState<number | null>(null);
   const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, recoveries: 0, open_stake: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
-  const [ledgerTab, setLedgerTab] = useState<"open" | "results">("results");
+  const [transactionFilter, setTransactionFilter] = useState<TransactionFilter>("all");
   const [lastBetAt, setLastBetAt] = useState(0);
   const [clock, setClock] = useState(() => Date.now());
   const [tickHistory, setTickHistory] = useState<{ price: number; timestamp: number }[]>([]);
@@ -443,13 +456,50 @@ export default function Home() {
   const signalLabel = model.blocked ? "WAIT" : `BET ${model.side}`;
   const freshness = dataAge <= 1_000 ? "LIVE" : dataAge < Infinity ? "STALE" : feedStatus.toUpperCase();
   const qualityCount = [spread <= 0.04, depth >= 5, dataAge <= 1_000, Boolean(live?.acceptingOrders)].filter(Boolean).length;
-  const visibleBets = ledgerTab === "results"
-    ? bets.filter((bet) => bet.status === "WON" || bet.status === "LOST" || bet.status === "EXITED")
-    : bets.filter((bet) => bet.status === "OPEN");
-  const resolvedCount = stats.wins + stats.losses;
-  const settledCount = resolvedCount + stats.recoveries;
-  const winRate = resolvedCount ? stats.wins / resolvedCount : 0;
   const settledBalance = startingBalance + stats.realized_pnl;
+  const transactions = bets.flatMap<ShareTransaction>((bet) => {
+    const shares = bet.shares ?? bet.stake / bet.entry_price;
+    const rows: ShareTransaction[] = [{
+      id: `buy-${bet.id}`,
+      action: "BUY",
+      time: bet.placed_at,
+      side: bet.side,
+      shares,
+      price: bet.entry_price,
+      cashFlow: -bet.stake,
+      description: `Bought ${bet.side} shares`,
+    }];
+    if (bet.status !== "OPEN" && bet.status !== "VOID" && bet.settled_at != null) {
+      const cashReceived = bet.payout ?? 0;
+      rows.push({
+        id: `sell-${bet.id}`,
+        action: "SELL",
+        time: bet.settled_at,
+        side: bet.side,
+        shares,
+        price: shares > 0 ? cashReceived / shares : 0,
+        cashFlow: cashReceived,
+        description: bet.status === "EXITED"
+          ? `Sold ${bet.side} through recovery`
+          : `Sold ${bet.side} at market close`,
+      });
+    }
+    return rows;
+  }).sort((a, b) => b.time - a.time);
+  const buyCount = transactions.filter((transaction) => transaction.action === "BUY").length;
+  const sellCount = transactions.filter((transaction) => transaction.action === "SELL").length;
+  const visibleTransactions = transactionFilter === "all"
+    ? transactions
+    : transactions.filter((transaction) => transaction.action === transactionFilter.toUpperCase());
+  const sharesHeld = bets
+    .filter((bet) => bet.status === "OPEN")
+    .reduce((sum, bet) => sum + (bet.shares ?? bet.stake / bet.entry_price), 0);
+  const cashPaid = transactions
+    .filter((transaction) => transaction.action === "BUY")
+    .reduce((sum, transaction) => sum - transaction.cashFlow, 0);
+  const cashReceived = transactions
+    .filter((transaction) => transaction.action === "SELL")
+    .reduce((sum, transaction) => sum + transaction.cashFlow, 0);
 
   const currentSnapshot = live && chainlink ? {
     action: "snapshot",
@@ -582,36 +632,42 @@ export default function Home() {
 
         <section className="card ledger">
           <div className="card-head ledger-head">
-            <div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Bet history</h2></div>
+            <div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Share transactions</h2><p className="ledger-explainer">Every position starts with a BUY. When it closes, the money received appears as a SELL.</p></div>
             <a className="csv-button" href="/api/paper?format=csv" download>↓ Download CSV</a>
           </div>
-          <div className="ledger-tabs" role="tablist" aria-label="Bet history views">
-            <button type="button" role="tab" aria-selected={ledgerTab === "open"} className={ledgerTab === "open" ? "active" : ""} onClick={() => setLedgerTab("open")}>Open bets <b>{stats.open_count}</b></button>
-            <button type="button" role="tab" aria-selected={ledgerTab === "results"} className={ledgerTab === "results" ? "active" : ""} onClick={() => setLedgerTab("results")}>Results <b>{settledCount}</b></button>
+          <div className="transaction-summary">
+            <div><span>Available cash</span><strong>{money(bankroll)}</strong></div>
+            <div><span>Shares currently held</span><strong>{sharesHeld.toFixed(2)}</strong></div>
+            <div><span>Paid for buys shown</span><strong className="negative">−{money(cashPaid)}</strong></div>
+            <div><span>Received from sells shown</span><strong className="positive">+{money(cashReceived)}</strong></div>
           </div>
-          {ledgerTab === "results" && (
-            <div className="result-summary">
-              <div><span>Wins</span><strong className="positive">{stats.wins}</strong></div>
-              <div><span>Losses</span><strong className="negative">{stats.losses}</strong></div>
-              <div><span>Recovery exits</span><strong className="recovered">{stats.recoveries}</strong></div>
-              <div><span>Win rate</span><strong>{pct(winRate)}</strong></div>
-              <div><span>Realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : ""}{money(stats.realized_pnl)}</strong></div>
-              <div><span>Balance after results</span><strong className={settledBalance >= startingBalance ? "positive" : "negative"}>{money(settledBalance)}</strong></div>
-            </div>
-          )}
-          {visibleBets.length === 0 ? (
+          <div className="ledger-tabs" role="tablist" aria-label="Share transaction filters">
+            <button type="button" role="tab" aria-selected={transactionFilter === "all"} className={transactionFilter === "all" ? "active" : ""} onClick={() => setTransactionFilter("all")}>All <b>{transactions.length}</b></button>
+            <button type="button" role="tab" aria-selected={transactionFilter === "buy"} className={transactionFilter === "buy" ? "active" : ""} onClick={() => setTransactionFilter("buy")}>Buys <b>{buyCount}</b></button>
+            <button type="button" role="tab" aria-selected={transactionFilter === "sell"} className={transactionFilter === "sell" ? "active" : ""} onClick={() => setTransactionFilter("sell")}>Sells <b>{sellCount}</b></button>
+          </div>
+          {visibleTransactions.length === 0 ? (
             <div className="empty">
               <span>◎</span>
-              <b>{ledgerTab === "results" ? "No settled results yet" : "No open bets"}</b>
-              <p>{ledgerTab === "results" ? "Wins, losses, and recovery exits will appear here as positions close." : "The engine has no unsettled paper bets right now."}</p>
+              <b>No {transactionFilter === "all" ? "share transactions" : `${transactionFilter} transactions`} yet</b>
+              <p>New purchases and sales will appear here automatically.</p>
             </div>
           ) : (
             <div className="table">
-              <div className="tr header"><span>Time</span><span>Side</span><span>Shares</span><span>Entry</span><span>Cost</span><span>{ledgerTab === "results" ? "Result / P&L" : "Status"}</span></div>
-              {visibleBets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{(bet.shares ?? bet.stake / bet.entry_price).toFixed(2)}</span><span>{pct(bet.entry_price)}</span><span>{money(bet.stake)}</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : bet.status === "EXITED" ? "recovered" : "open"}>{bet.status === "EXITED" ? "RECOVERED" : bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}
+              <div className="tr transaction-row header"><span>Action</span><span>Time</span><span>Shares</span><span>Direction</span><span>Price / share</span><span>Money</span></div>
+              {visibleTransactions.map((transaction) => (
+                <div className="tr transaction-row" key={transaction.id}>
+                  <span className={`trade-action ${transaction.action.toLowerCase()}`}>{transaction.action}</span>
+                  <span>{new Date(transaction.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                  <span><b>{transaction.shares.toFixed(2)}</b><small>{transaction.description}</small></span>
+                  <b className={transaction.side === "UP" ? "positive" : "negative"}>{transaction.side}</b>
+                  <span>{(transaction.price * 100).toFixed(1)}¢</span>
+                  <strong className={transaction.action === "BUY" ? "negative" : "positive"}>{transaction.cashFlow >= 0 ? "+" : "−"}{money(Math.abs(transaction.cashFlow))}</strong>
+                </div>
+              ))}
             </div>
           )}
-          <p className="csv-note">CSV includes the complete database history: market, side, shares, dollar cost, entry, model fair price, edge, test settlement, payout, P&amp;L, and UTC timestamps. · {snapshotCount} model samples stored.</p>
+          <p className="csv-note">BUY means cash paid to acquire shares. SELL means cash received when shares were recovered or the market closed. The CSV keeps the complete underlying trade record. · {snapshotCount} model samples stored.</p>
         </section>
         <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Immediate self-calculated test settlement</span></footer>
       </section>
