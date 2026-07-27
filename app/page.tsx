@@ -9,6 +9,7 @@ type Bet = {
   market_slug: string;
   side: Side;
   stake: number;
+  shares: number | null;
   entry_price: number;
   edge: number;
   status: "OPEN" | "WON" | "LOST" | "EXITED" | "VOID";
@@ -38,6 +39,7 @@ type LiveMarket = {
 };
 
 const VARIANCE_FLOOR = 2.3020308442843487e-9;
+const FIXED_SHARES = 5;
 const normalCdf = (x: number) => {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
   const d = 0.3989423 * Math.exp((-x * x) / 2);
@@ -236,6 +238,7 @@ export default function Home() {
     const downEdge = 1 - calibrated - downAsk - 0.01 - spreadPenalty;
     const side: Side = upEdge >= downEdge ? "UP" : "DOWN";
     const bestEdge = Math.max(upEdge, downEdge);
+    const orderCost = FIXED_SHARES * (side === "UP" ? upAsk : downAsk);
     const sigmaBpsPerSqrtSecond = Math.sqrt(qUsed) * 10_000;
     const volatilityRegime =
       sigmaBpsPerSqrtSecond < 0.5 ? "LOW" : sigmaBpsPerSqrtSecond < 1.25 ? "MEDIUM" : "HIGH";
@@ -254,7 +257,7 @@ export default function Home() {
       seconds < 15 ? "less than 15 seconds remain" : "",
       bestEdge < requiredEdge ? `edge below ${(requiredEdge * 100).toFixed(1)}¢` : "",
       dominantPrice < 0.8 ? "no outcome is at least 80¢" : "",
-      bankroll < 5 ? "insufficient paper balance" : "",
+      bankroll < orderCost ? `balance below ${money(orderCost)} order cost` : "",
       spread > 0.04 ? "spread above 4¢" : "",
       depth < 5 ? "top depth below 5 shares" : "",
       dataAge > 1_000 ? "Chainlink data older than 1,000ms" : "",
@@ -264,12 +267,12 @@ export default function Home() {
     return {
       qUsed, distance, z, raw, calibrated, upAsk, downAsk, upEdge, downEdge,
       side, bestEdge, blocked, qualityPass, blockedReasons, volatilityRegime,
-      requiredEdge, adaptiveEligible,
+      requiredEdge, adaptiveEligible, orderCost,
     };
   }, [bankroll, btc, chainlink, dataAge, dataError, depth, feedStatus, ledgerError, live, marketUp, seconds, spread, strike, variance]);
 
   const placeBet = async (side = model.side) => {
-    if (bankroll < 5 || model.blocked || !live || placing) return;
+    if (bankroll < model.orderCost || model.blocked || !live || placing) return;
     const edge = side === "UP" ? model.upEdge : model.downEdge;
     const price = side === "UP" ? model.upAsk : model.downAsk;
     setLastBetAt(Date.now());
@@ -285,7 +288,7 @@ export default function Home() {
           marketTitle: live.eventTitle,
           marketEndMs: live.windowEnd,
           side,
-          stake: 5,
+          shares: FIXED_SHARES,
           entryPrice: price,
           fairProbability: side === "UP" ? model.calibrated : 1 - model.calibrated,
           edge,
@@ -313,7 +316,7 @@ export default function Home() {
       .map((bet) => {
         const currentBid = bet.side === "UP" ? live.upBid : live.downBid;
         const bidSize = bet.side === "UP" ? live.upBidSize : live.downBidSize;
-        const shares = bet.stake / bet.entry_price;
+        const shares = bet.shares ?? bet.stake / bet.entry_price;
         const unrealizedPnl = shares * currentBid - bet.stake;
         const originalFair = bet.side === "UP" ? model.calibrated : 1 - model.calibrated;
         const rawOriginalFair = bet.side === "UP" ? model.raw : 1 - model.raw;
@@ -322,10 +325,11 @@ export default function Home() {
         const adverseMomentum = [momentum15, momentum30, momentum60].filter((value) =>
           bet.side === "UP" ? value <= -0.5 : value >= 0.5
         ).length;
-        const lossLimit =
-          model.volatilityRegime === "HIGH" ? -1.5 :
-          model.volatilityRegime === "MEDIUM" ? -2 :
-          -2.5;
+        const lossLimit = -bet.stake * (
+          model.volatilityRegime === "HIGH" ? 0.3 :
+          model.volatilityRegime === "MEDIUM" ? 0.4 :
+          0.5
+        );
         const hardLoss = unrealizedPnl <= lossLimit;
         const choppy = choppiness60 > 0.65;
         const score =
@@ -537,7 +541,7 @@ export default function Home() {
 
         <section className="metrics">
           <article><span>Available balance</span><strong>{money(bankroll)}</strong><small>{money(settledBalance)} after results · {money(stats.open_stake)} in open bets</small></article>
-          <article><span>Fixed bet size</span><strong>$5.00</strong><small>{Math.floor(bankroll / 5)} bets remaining</small></article>
+          <article><span>Fixed order size</span><strong>5 shares</strong><small>{money(model.orderCost)} at the selected ask · {model.orderCost > 0 ? Math.floor(bankroll / model.orderCost) : 0} orders available</small></article>
           <article><span>Chainlink BTC/USD</span><strong>{btc ? `$${btc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</strong><small className={btc >= strike ? "positive" : "negative"}>{btc && strike ? `${btc >= strike ? "▲" : "▼"} ${Math.abs((btc / strike - 1) * 10000).toFixed(1)} bps vs $${strike.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "Waiting for Polymarket"}</small></article>
           <article><span>Engine state</span><strong className="positive">Always on</strong><small>{freshness} · {dataAge < Infinity ? `${Math.round(dataAge)}ms data age` : "No data yet"}</small></article>
         </section>
@@ -557,7 +561,7 @@ export default function Home() {
               <div><span>Polymarket UP ask</span><b>{live ? pct(model.upAsk) : "—"}</b></div>
               <div><span>Net edge</span><b className={model.bestEdge >= 0.02 ? "positive" : ""}>{live ? `${(model.bestEdge * 100).toFixed(1)}¢` : "—"}</b></div>
             </div>
-            <button className="bet-button" disabled={model.blocked || bankroll < 5 || placing || recoveringBetId != null} onClick={() => placeBet()}>{placing ? "Recording paper bet…" : recoveringBetId != null ? "Executing recovery exit…" : `Place $5 paper bet on ${model.side}`}</button>
+            <button className="bet-button" disabled={model.blocked || bankroll < model.orderCost || placing || recoveringBetId != null} onClick={() => placeBet()}>{placing ? "Recording paper order…" : recoveringBetId != null ? "Executing recovery exit…" : `Buy 5 ${model.side} shares for ${money(model.orderCost)}`}</button>
             <div className="always-on-row"><span><b>Automatic execution and recovery are locked on</b><small>Entry signals run continuously. Confirmed reversals exit at the executable bid instead of doubling the stake.</small></span><strong>ACTIVE</strong></div>
           </section>
 
@@ -603,11 +607,11 @@ export default function Home() {
             </div>
           ) : (
             <div className="table">
-              <div className="tr header"><span>Time</span><span>Side</span><span>Stake</span><span>Entry</span><span>Edge</span><span>{ledgerTab === "results" ? "Result / P&L" : "Status"}</span></div>
-              {visibleBets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{money(bet.stake)}</span><span>{pct(bet.entry_price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : bet.status === "EXITED" ? "recovered" : "open"}>{bet.status === "EXITED" ? "RECOVERED" : bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}
+              <div className="tr header"><span>Time</span><span>Side</span><span>Shares</span><span>Entry</span><span>Cost</span><span>{ledgerTab === "results" ? "Result / P&L" : "Status"}</span></div>
+              {visibleBets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{(bet.shares ?? bet.stake / bet.entry_price).toFixed(2)}</span><span>{pct(bet.entry_price)}</span><span>{money(bet.stake)}</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : bet.status === "EXITED" ? "recovered" : "open"}>{bet.status === "EXITED" ? "RECOVERED" : bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}
             </div>
           )}
-          <p className="csv-note">CSV includes the complete database history: market, side, stake, entry, model fair price, edge, test settlement, payout, P&amp;L, and UTC timestamps. · {snapshotCount} model samples stored.</p>
+          <p className="csv-note">CSV includes the complete database history: market, side, shares, dollar cost, entry, model fair price, edge, test settlement, payout, P&amp;L, and UTC timestamps. · {snapshotCount} model samples stored.</p>
         </section>
         <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Immediate self-calculated test settlement</span></footer>
       </section>

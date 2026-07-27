@@ -5,6 +5,7 @@ export const paperAccounts = sqliteTable("paper_accounts", {
   startingBalance: real("starting_balance").notNull().default(100),
   balance: real("balance").notNull().default(100),
   fixedStake: real("fixed_stake").notNull().default(5),
+  fixedShares: real("fixed_shares").notNull().default(5),
   updatedAt: integer("updated_at").notNull(),
 });
 
@@ -18,6 +19,7 @@ export const paperBets = sqliteTable(
     marketEndMs: integer("market_end_ms").notNull(),
     side: text("side", { enum: ["UP", "DOWN"] }).notNull(),
     stake: real("stake").notNull(),
+    shares: real("shares"),
     entryPrice: real("entry_price").notNull(),
     fairProbability: real("fair_probability").notNull(),
     edge: real("edge").notNull(),

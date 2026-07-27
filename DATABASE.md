@@ -12,14 +12,15 @@ One persistent paper account with:
 
 - $100 starting balance
 - current available balance
-- $5 fixed stake
+- 5-share fixed order size
 - last update time
 
 ### `paper_bets`
 
 Every simulated order with its Polymarket condition ID, market slug, exact
-market close time, side, entry price, fair probability, edge, settlement
-status, winning outcome or recovery reason, payout, PnL, and timestamps.
+market close time, side, five-share quantity, dollar entry cost, entry price,
+fair probability, edge, settlement status, winning outcome or recovery reason,
+payout, PnL, and timestamps.
 
 ### `model_snapshots`
 

@@ -7,9 +7,10 @@ does not connect to a wallet or submit orders.
 ## Bankroll and execution
 
 - Starting bankroll: **$100**
-- Fixed stake: **$5 per signal**
+- Fixed order size: **5 shares per signal**
+- Entry cost: **5 × the selected outcome's ask price**
 - Maximum bet frequency: **one every 20 seconds**
-- No bet when the available balance is below $5
+- No bet when the available balance is below the calculated five-share cost
 - Normal required net edge: **2 cents**
 - Adaptive required net edge: **0.5 cents** only in low/medium volatility,
   when the Chainlink model leads the same-side Polymarket probability by at
@@ -56,7 +57,7 @@ The 0.97 EWMA decay corresponds to the documented **22.7566-second half-life**.
   the cutoff, the app reads the completed Chainlink price window from
   Polymarket and calculates the outcome itself.
 - `UP` wins when `closePrice >= openPrice`; otherwise `DOWN` wins.
-- Winning payout is `stake / entry price`; losing payout is zero.
+- A winning five-share position pays **$5**; a losing position pays zero.
 - The persistent balance is recalculated as starting balance plus settled P&L
   minus stakes still held in open bets.
 
@@ -77,22 +78,24 @@ The engine scores a possible reversal using:
 - time remaining; and
 - a penalty for high 60-second choppiness.
 
-The mark-to-market loss limits are $2.50 in low volatility, $2.00 in medium
-volatility, and $1.50 in high volatility on a $5 position. A normal recovery
-requires a confirmed model flip, an adverse strike crossing, at least two
-adverse momentum windows, fair value below 45%, low choppiness, and a score of
-at least 6. Emergency and final-45-second defenses use the same live evidence
-with tighter loss or fair-value conditions.
+The mark-to-market loss limits are 50% of entry cost in low volatility, 40% in
+medium volatility, and 30% in high volatility. A normal recovery requires a
+confirmed model flip, an adverse strike crossing, at least two adverse momentum
+windows, fair value below 45%, low choppiness, and a score of at least 6.
+Emergency and final-45-second defenses use the same live evidence with tighter
+loss or fair-value conditions.
 
 At exit, the engine assumes the full position sells at the displayed best bid:
 
-`shares = stake / entry_price`
+`shares = 5`
 
 `recovery proceeds = shares * exit_bid`
 
-`recovery P&L = recovery proceeds - stake`
+`entry cost = shares * entry_price`
 
-Recovery never increases the stake and cannot fire without enough displayed bid
+`recovery P&L = recovery proceeds - entry cost`
+
+Recovery never increases the position and cannot fire without enough displayed bid
 depth. This is still a paper fill assumption and does not include real taker
 fees, latency, partial fills, or queue movement.
 

@@ -8,6 +8,7 @@ export type StoredBet = {
   market_end_ms: number;
   side: "UP" | "DOWN";
   stake: number;
+  shares: number | null;
   entry_price: number;
   fair_probability: number;
   edge: number;
@@ -32,6 +33,7 @@ export async function ensurePaperDatabase() {
       starting_balance REAL NOT NULL DEFAULT 100,
       balance REAL NOT NULL DEFAULT 100,
       fixed_stake REAL NOT NULL DEFAULT 5,
+      fixed_shares REAL NOT NULL DEFAULT 5,
       updated_at INTEGER NOT NULL
     )`),
     d1.prepare(`CREATE TABLE IF NOT EXISTS paper_bets (
@@ -42,6 +44,7 @@ export async function ensurePaperDatabase() {
       market_end_ms INTEGER NOT NULL,
       side TEXT NOT NULL,
       stake REAL NOT NULL,
+      shares REAL,
       entry_price REAL NOT NULL,
       fair_probability REAL NOT NULL,
       edge REAL NOT NULL,
@@ -85,6 +88,19 @@ export async function ensurePaperDatabase() {
       (id, starting_balance, balance, fixed_stake, updated_at)
       VALUES (1, 100, 100, 5, ?1)`).bind(Date.now()),
   ]);
+  const [accountColumns, betColumns] = await Promise.all([
+    d1.prepare("PRAGMA table_info(paper_accounts)").all<{ name: string }>(),
+    d1.prepare("PRAGMA table_info(paper_bets)").all<{ name: string }>(),
+  ]);
+  if (!accountColumns.results.some((column) => column.name === "fixed_shares")) {
+    await d1.prepare("ALTER TABLE paper_accounts ADD COLUMN fixed_shares REAL NOT NULL DEFAULT 5").run();
+  }
+  if (!betColumns.results.some((column) => column.name === "shares")) {
+    await d1.prepare("ALTER TABLE paper_bets ADD COLUMN shares REAL").run();
+  }
+  await d1.prepare(`UPDATE paper_bets
+    SET shares = stake / entry_price
+    WHERE shares IS NULL AND entry_price > 0`).run();
 }
 
 export async function settleExpiredBetsForTesting() {
@@ -132,7 +148,8 @@ export async function settleExpiredBetsForTesting() {
 
       for (const bet of bets) {
         const won = bet.side === winner;
-        const payout = won ? bet.stake / bet.entry_price : 0;
+        const shares = bet.shares ?? bet.stake / bet.entry_price;
+        const payout = won ? shares : 0;
         const pnl = payout - bet.stake;
         const settledAt = Date.now();
         await d1.prepare(`UPDATE paper_bets
@@ -232,7 +249,7 @@ export async function exitStoredBetForRecovery(input: {
   if (bet.market_end_ms <= Date.now()) {
     throw new Error("The market has ended; settlement will calculate the result.");
   }
-  const shares = bet.stake / bet.entry_price;
+  const shares = bet.shares ?? bet.stake / bet.entry_price;
   const proceeds = shares * input.exitPrice;
   const pnl = proceeds - bet.stake;
   const reason = input.reason.replace(/\s+/g, " ").trim().slice(0, 180) || "Recovery exit";
@@ -250,33 +267,36 @@ export async function placeStoredBet(input: {
   marketTitle: string;
   marketEndMs: number;
   side: "UP" | "DOWN";
-  stake: number;
+  shares: number;
   entryPrice: number;
   fairProbability: number;
   edge: number;
 }) {
   const d1 = db();
   await reconcilePaperBalance();
+  if (input.shares !== 5) throw new Error("Paper orders must contain exactly 5 shares.");
+  const stake = input.shares * input.entryPrice;
   const account = await d1
     .prepare("SELECT balance FROM paper_accounts WHERE id = 1")
     .first<{ balance: number }>();
-  if (!account || account.balance < input.stake) throw new Error("Insufficient paper balance.");
+  if (!account || account.balance < stake) throw new Error("Insufficient paper balance.");
   if (input.entryPrice <= 0 || input.entryPrice > 1) throw new Error("Invalid entry price.");
   const now = Date.now();
   await d1.batch([
     d1.prepare("UPDATE paper_accounts SET balance = balance - ?1, updated_at = ?2 WHERE id = 1")
-      .bind(input.stake, now),
+      .bind(stake, now),
     d1.prepare(`INSERT INTO paper_bets
-      (condition_id, market_slug, market_title, market_end_ms, side, stake,
+      (condition_id, market_slug, market_title, market_end_ms, side, stake, shares,
        entry_price, fair_probability, edge, status, placed_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'OPEN', ?10)`)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'OPEN', ?11)`)
       .bind(
         input.conditionId,
         input.marketSlug,
         input.marketTitle,
         input.marketEndMs,
         input.side,
-        input.stake,
+        stake,
+        input.shares,
         input.entryPrice,
         input.fairProbability,
         input.edge,
