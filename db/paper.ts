@@ -173,6 +173,13 @@ export async function readPaperLedger() {
   };
 }
 
+export async function readPaperBetsForExport() {
+  const result = await db()
+    .prepare("SELECT * FROM paper_bets ORDER BY placed_at DESC")
+    .all<StoredBet>();
+  return result.results;
+}
+
 export async function placeStoredBet(input: {
   conditionId: string;
   marketSlug: string;

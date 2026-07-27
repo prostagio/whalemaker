@@ -1,11 +1,35 @@
 import {
   ensurePaperDatabase,
   placeStoredBet,
+  readPaperBetsForExport,
   readPaperLedger,
   resetPaperLedger,
   settleResolvedBets,
   storeModelSnapshot,
 } from "../../../db/paper";
+
+const csvCell = (value: string | number | null) => {
+  const text = value == null ? "" : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+};
+
+const isoTime = (value: number | null) => value ? new Date(value).toISOString() : "";
+
+const betsCsv = async () => {
+  const bets = await readPaperBetsForExport();
+  const headings = [
+    "id", "market_slug", "market_title", "condition_id", "side", "stake_usd",
+    "entry_price", "fair_probability", "edge", "status", "settlement_outcome",
+    "payout_usd", "pnl_usd", "market_end_utc", "placed_at_utc", "settled_at_utc",
+  ];
+  const rows = bets.map((bet) => [
+    bet.id, bet.market_slug, bet.market_title, bet.condition_id, bet.side, bet.stake,
+    bet.entry_price, bet.fair_probability, bet.edge, bet.status, bet.settlement_outcome,
+    bet.payout, bet.pnl, isoTime(bet.market_end_ms), isoTime(bet.placed_at),
+    isoTime(bet.settled_at),
+  ]);
+  return [headings, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+};
 
 const response = async () => {
   await settleResolvedBets();
@@ -14,9 +38,19 @@ const response = async () => {
   });
 };
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     await ensurePaperDatabase();
+    if (new URL(request.url).searchParams.get("format") === "csv") {
+      await settleResolvedBets();
+      return new Response(await betsCsv(), {
+        headers: {
+          "Cache-Control": "no-store, max-age=0",
+          "Content-Disposition": 'attachment; filename="whalemaker-paper-results.csv"',
+          "Content-Type": "text/csv; charset=utf-8",
+        },
+      });
+    }
     return await response();
   } catch (error) {
     return Response.json(

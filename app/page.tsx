@@ -55,6 +55,7 @@ export default function Home() {
   const [placing, setPlacing] = useState(false);
   const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
+  const [ledgerTab, setLedgerTab] = useState<"open" | "results">("results");
   const [autoBet, setAutoBet] = useState(true);
   const [lastBetAt, setLastBetAt] = useState(0);
   const [clock, setClock] = useState(() => Date.now());
@@ -325,6 +326,11 @@ export default function Home() {
   const signalLabel = model.blocked ? "WAIT" : `BET ${model.side}`;
   const freshness = dataAge <= 1_000 ? "LIVE" : dataAge < Infinity ? "STALE" : feedStatus.toUpperCase();
   const qualityCount = [spread <= 0.04, depth >= 5, dataAge <= 1_000, Boolean(live?.acceptingOrders)].filter(Boolean).length;
+  const visibleBets = ledgerTab === "results"
+    ? bets.filter((bet) => bet.status === "WON" || bet.status === "LOST")
+    : bets.filter((bet) => bet.status === "OPEN");
+  const settledCount = stats.wins + stats.losses;
+  const winRate = settledCount ? stats.wins / settledCount : 0;
 
   const currentSnapshot = live && chainlink ? {
     action: "snapshot",
@@ -457,9 +463,35 @@ export default function Home() {
         </div>
 
         <section className="card ledger">
-          <div className="card-head"><div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Recent bets</h2></div><span className="subtle">{stats.wins}W · {stats.losses}L · {snapshotCount} model samples</span></div>
-          {bets.length === 0 ? <div className="empty"><span>◎</span><b>No bets yet</b><p>Start the engine. It will wait until live Polymarket data produces a qualifying edge.</p></div> :
-            <div className="table"><div className="tr header"><span>Time</span><span>Side</span><span>Stake</span><span>Entry</span><span>Edge</span><span>Status</span></div>{bets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{money(bet.stake)}</span><span>{pct(bet.entry_price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : "open"}>{bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}</div>}
+          <div className="card-head ledger-head">
+            <div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Bet history</h2></div>
+            <a className="csv-button" href="/api/paper?format=csv" download>↓ Download CSV</a>
+          </div>
+          <div className="ledger-tabs" role="tablist" aria-label="Bet history views">
+            <button type="button" role="tab" aria-selected={ledgerTab === "open"} className={ledgerTab === "open" ? "active" : ""} onClick={() => setLedgerTab("open")}>Open bets <b>{stats.open_count}</b></button>
+            <button type="button" role="tab" aria-selected={ledgerTab === "results"} className={ledgerTab === "results" ? "active" : ""} onClick={() => setLedgerTab("results")}>Results <b>{settledCount}</b></button>
+          </div>
+          {ledgerTab === "results" && (
+            <div className="result-summary">
+              <div><span>Wins</span><strong className="positive">{stats.wins}</strong></div>
+              <div><span>Losses</span><strong className="negative">{stats.losses}</strong></div>
+              <div><span>Win rate</span><strong>{pct(winRate)}</strong></div>
+              <div><span>Realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : ""}{money(stats.realized_pnl)}</strong></div>
+            </div>
+          )}
+          {visibleBets.length === 0 ? (
+            <div className="empty">
+              <span>◎</span>
+              <b>{ledgerTab === "results" ? "No settled results yet" : "No open bets"}</b>
+              <p>{ledgerTab === "results" ? "Wins and losses will appear here after Polymarket settles a market." : "The engine has no unsettled paper bets right now."}</p>
+            </div>
+          ) : (
+            <div className="table">
+              <div className="tr header"><span>Time</span><span>Side</span><span>Stake</span><span>Entry</span><span>Edge</span><span>{ledgerTab === "results" ? "Result / P&L" : "Status"}</span></div>
+              {visibleBets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{money(bet.stake)}</span><span>{pct(bet.entry_price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : "open"}>{bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}
+            </div>
+          )}
+          <p className="csv-note">CSV includes the complete database history: market, side, stake, entry, model fair price, edge, settlement, payout, P&amp;L, and UTC timestamps. · {snapshotCount} model samples stored.</p>
         </section>
         <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Chainlink BTC/USD settlement source</span></footer>
       </section>
