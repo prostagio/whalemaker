@@ -5,11 +5,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type Side = "UP" | "DOWN";
 type Bet = {
   id: number;
+  condition_id: string;
+  market_slug: string;
   side: Side;
   stake: number;
   entry_price: number;
   edge: number;
-  status: "OPEN" | "WON" | "LOST" | "VOID";
+  status: "OPEN" | "WON" | "LOST" | "EXITED" | "VOID";
+  settlement_outcome: string | null;
   pnl: number | null;
   placed_at: number;
 };
@@ -28,7 +31,9 @@ type LiveMarket = {
   downAsk: number;
   downBid: number;
   upAskSize: number;
+  upBidSize: number;
   downAskSize: number;
+  downBidSize: number;
   fetchedAt: number;
 };
 
@@ -53,7 +58,8 @@ export default function Home() {
   const [bets, setBets] = useState<Bet[]>([]);
   const [ledgerError, setLedgerError] = useState("");
   const [placing, setPlacing] = useState(false);
-  const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, open_stake: 0, realized_pnl: 0 });
+  const [recoveringBetId, setRecoveringBetId] = useState<number | null>(null);
+  const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, recoveries: 0, open_stake: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
   const [ledgerTab, setLedgerTab] = useState<"open" | "results">("results");
   const [lastBetAt, setLastBetAt] = useState(0);
@@ -296,13 +302,121 @@ export default function Home() {
     }
   };
 
+  const recoveryCandidate = useMemo(() => {
+    if (!live || !chainlink || dataAge > 1_000 || spread > 0.04 || seconds <= 3) return null;
+    const candidates = bets
+      .filter((bet) =>
+        bet.status === "OPEN" &&
+        bet.market_slug === live.slug &&
+        clock - bet.placed_at >= 10_000
+      )
+      .map((bet) => {
+        const currentBid = bet.side === "UP" ? live.upBid : live.downBid;
+        const bidSize = bet.side === "UP" ? live.upBidSize : live.downBidSize;
+        const shares = bet.stake / bet.entry_price;
+        const unrealizedPnl = shares * currentBid - bet.stake;
+        const originalFair = bet.side === "UP" ? model.calibrated : 1 - model.calibrated;
+        const rawOriginalFair = bet.side === "UP" ? model.raw : 1 - model.raw;
+        const modelFlipped = model.side !== bet.side;
+        const strikeAgainst = bet.side === "UP" ? btc < strike : btc >= strike;
+        const adverseMomentum = [momentum15, momentum30, momentum60].filter((value) =>
+          bet.side === "UP" ? value <= -0.5 : value >= 0.5
+        ).length;
+        const lossLimit =
+          model.volatilityRegime === "HIGH" ? -1.5 :
+          model.volatilityRegime === "MEDIUM" ? -2 :
+          -2.5;
+        const hardLoss = unrealizedPnl <= lossLimit;
+        const choppy = choppiness60 > 0.65;
+        const score =
+          (modelFlipped ? 2 : 0) +
+          (strikeAgainst ? 2 : 0) +
+          (originalFair < 0.45 ? 1 : 0) +
+          (rawOriginalFair < 0.4 ? 1 : 0) +
+          (adverseMomentum >= 2 ? 2 : 0) +
+          (adverseMomentum === 3 ? 1 : 0) +
+          (hardLoss ? 2 : 0) +
+          (seconds <= 60 ? 1 : 0) -
+          (choppy ? 2 : 0);
+        const liquidExit =
+          live.acceptingOrders &&
+          currentBid > 0 &&
+          bidSize >= shares;
+        const confirmedFlip =
+          modelFlipped &&
+          strikeAgainst &&
+          adverseMomentum >= 2 &&
+          originalFair < 0.45 &&
+          !choppy &&
+          score >= 6;
+        const emergencyStop =
+          hardLoss &&
+          modelFlipped &&
+          strikeAgainst &&
+          score >= 5;
+        const lateDefense =
+          seconds <= 45 &&
+          modelFlipped &&
+          strikeAgainst &&
+          originalFair < 0.35 &&
+          adverseMomentum >= 1;
+        return {
+          bet,
+          currentBid,
+          unrealizedPnl,
+          score,
+          originalFair,
+          adverseMomentum,
+          liquidExit,
+          shouldExit: liquidExit && (confirmedFlip || emergencyStop || lateDefense),
+          reason: `${emergencyStop ? "volatility stop" : lateDefense ? "late-window defense" : "confirmed reversal"}; score ${score}; fair ${(originalFair * 100).toFixed(1)}%; momentum ${adverseMomentum}/3; ${model.volatilityRegime.toLowerCase()} volatility`,
+        };
+      })
+      .filter((candidate) => candidate.shouldExit)
+      .sort((a, b) => a.unrealizedPnl - b.unrealizedPnl);
+    return candidates[0] ?? null;
+  }, [bets, btc, chainlink, choppiness60, clock, dataAge, live, model.calibrated, model.raw, model.side, model.volatilityRegime, momentum15, momentum30, momentum60, seconds, spread, strike]);
+
+  const recoverBet = async () => {
+    if (!recoveryCandidate || recoveringBetId != null) return;
+    setRecoveringBetId(recoveryCandidate.bet.id);
+    try {
+      const response = await fetch("/api/paper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "recover",
+          betId: recoveryCandidate.bet.id,
+          exitPrice: recoveryCandidate.currentBid,
+          reason: recoveryCandidate.reason,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Recovery exit failed.");
+      applyLedger(payload);
+      setLedgerError("");
+    } catch (error) {
+      setLedgerError(error instanceof Error ? error.message : "Recovery exit failed.");
+    } finally {
+      setRecoveringBetId(null);
+    }
+  };
+
   useEffect(() => {
-    if (model.blocked || placing || clock - lastBetAt <= 20_000) return;
+    if (!recoveryCandidate || recoveringBetId != null) return;
+    const pending = window.setTimeout(recoverBet, 0);
+    return () => window.clearTimeout(pending);
+    // Recovery deliberately reacts to the latest confirmed candidate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recoveryCandidate, recoveringBetId]);
+
+  useEffect(() => {
+    if (model.blocked || placing || recoveringBetId != null || recoveryCandidate || clock - lastBetAt <= 20_000) return;
     const pending = window.setTimeout(() => placeBet(), 0);
     return () => window.clearTimeout(pending);
     // The live model intentionally controls this effect cadence.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clock, model.blocked, model.side, placing]);
+  }, [clock, model.blocked, model.side, placing, recoveringBetId, recoveryCandidate]);
 
   const reset = async () => {
     setLastBetAt(0);
@@ -326,10 +440,11 @@ export default function Home() {
   const freshness = dataAge <= 1_000 ? "LIVE" : dataAge < Infinity ? "STALE" : feedStatus.toUpperCase();
   const qualityCount = [spread <= 0.04, depth >= 5, dataAge <= 1_000, Boolean(live?.acceptingOrders)].filter(Boolean).length;
   const visibleBets = ledgerTab === "results"
-    ? bets.filter((bet) => bet.status === "WON" || bet.status === "LOST")
+    ? bets.filter((bet) => bet.status === "WON" || bet.status === "LOST" || bet.status === "EXITED")
     : bets.filter((bet) => bet.status === "OPEN");
-  const settledCount = stats.wins + stats.losses;
-  const winRate = settledCount ? stats.wins / settledCount : 0;
+  const resolvedCount = stats.wins + stats.losses;
+  const settledCount = resolvedCount + stats.recoveries;
+  const winRate = resolvedCount ? stats.wins / resolvedCount : 0;
   const settledBalance = startingBalance + stats.realized_pnl;
 
   const currentSnapshot = live && chainlink ? {
@@ -442,8 +557,8 @@ export default function Home() {
               <div><span>Polymarket UP ask</span><b>{live ? pct(model.upAsk) : "—"}</b></div>
               <div><span>Net edge</span><b className={model.bestEdge >= 0.02 ? "positive" : ""}>{live ? `${(model.bestEdge * 100).toFixed(1)}¢` : "—"}</b></div>
             </div>
-            <button className="bet-button" disabled={model.blocked || bankroll < 5 || placing} onClick={() => placeBet()}>{placing ? "Recording paper bet…" : `Place $5 paper bet on ${model.side}`}</button>
-            <div className="always-on-row"><span><b>Automatic execution is locked on</b><small>The engine continuously watches and records a maximum of one qualifying paper bet every 20 seconds.</small></span><strong>ACTIVE</strong></div>
+            <button className="bet-button" disabled={model.blocked || bankroll < 5 || placing || recoveringBetId != null} onClick={() => placeBet()}>{placing ? "Recording paper bet…" : recoveringBetId != null ? "Executing recovery exit…" : `Place $5 paper bet on ${model.side}`}</button>
+            <div className="always-on-row"><span><b>Automatic execution and recovery are locked on</b><small>Entry signals run continuously. Confirmed reversals exit at the executable bid instead of doubling the stake.</small></span><strong>ACTIVE</strong></div>
           </section>
 
           <section className="card">
@@ -456,7 +571,7 @@ export default function Home() {
             </div>
             <details>
               <summary>View calculation details <span>⌄</span></summary>
-              <div className="formula"><code>z = ln(S/K) ÷ √(q × T)</code><p>z-score <b>{model.z.toFixed(3)}</b> · raw probability <b>{pct(model.raw)}</b></p><p>50% Chainlink fair model + 50% Polymarket midpoint</p><p>Momentum 15/30/60s: <b>{momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</b></p><p>Choppiness 60s: <b>{choppiness60.toFixed(2)}</b> · volatility: <b>{model.volatilityRegime}</b></p><p>Required edge: <b>{(model.requiredEdge * 100).toFixed(1)}¢</b>{model.adaptiveEligible ? " adaptive tier" : " normal tier"}</p></div>
+              <div className="formula"><code>z = ln(S/K) ÷ √(q × T)</code><p>z-score <b>{model.z.toFixed(3)}</b> · raw probability <b>{pct(model.raw)}</b></p><p>50% Chainlink fair model + 50% Polymarket midpoint</p><p>Momentum 15/30/60s: <b>{momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</b></p><p>Choppiness 60s: <b>{choppiness60.toFixed(2)}</b> · volatility: <b>{model.volatilityRegime}</b></p><p>Required edge: <b>{(model.requiredEdge * 100).toFixed(1)}¢</b>{model.adaptiveEligible ? " adaptive tier" : " normal tier"}</p><p>Recovery: <b>{recoveringBetId != null ? "EXITING" : recoveryCandidate ? `TRIGGERED · score ${recoveryCandidate.score}` : "MONITORING"}</b></p></div>
             </details>
           </section>
         </div>
@@ -474,6 +589,7 @@ export default function Home() {
             <div className="result-summary">
               <div><span>Wins</span><strong className="positive">{stats.wins}</strong></div>
               <div><span>Losses</span><strong className="negative">{stats.losses}</strong></div>
+              <div><span>Recovery exits</span><strong className="recovered">{stats.recoveries}</strong></div>
               <div><span>Win rate</span><strong>{pct(winRate)}</strong></div>
               <div><span>Realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : ""}{money(stats.realized_pnl)}</strong></div>
               <div><span>Balance after results</span><strong className={settledBalance >= startingBalance ? "positive" : "negative"}>{money(settledBalance)}</strong></div>
@@ -483,12 +599,12 @@ export default function Home() {
             <div className="empty">
               <span>◎</span>
               <b>{ledgerTab === "results" ? "No settled results yet" : "No open bets"}</b>
-              <p>{ledgerTab === "results" ? "Wins and losses will appear here after Polymarket settles a market." : "The engine has no unsettled paper bets right now."}</p>
+              <p>{ledgerTab === "results" ? "Wins, losses, and recovery exits will appear here as positions close." : "The engine has no unsettled paper bets right now."}</p>
             </div>
           ) : (
             <div className="table">
               <div className="tr header"><span>Time</span><span>Side</span><span>Stake</span><span>Entry</span><span>Edge</span><span>{ledgerTab === "results" ? "Result / P&L" : "Status"}</span></div>
-              {visibleBets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{money(bet.stake)}</span><span>{pct(bet.entry_price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : "open"}>{bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}
+              {visibleBets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{money(bet.stake)}</span><span>{pct(bet.entry_price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : bet.status === "EXITED" ? "recovered" : "open"}>{bet.status === "EXITED" ? "RECOVERED" : bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}
             </div>
           )}
           <p className="csv-note">CSV includes the complete database history: market, side, stake, entry, model fair price, edge, test settlement, payout, P&amp;L, and UTC timestamps. · {snapshotCount} model samples stored.</p>

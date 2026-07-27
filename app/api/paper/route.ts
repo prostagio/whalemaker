@@ -1,5 +1,6 @@
 import {
   ensurePaperDatabase,
+  exitStoredBetForRecovery,
   placeStoredBet,
   readPaperBetsForExport,
   readPaperLedger,
@@ -66,6 +67,12 @@ export async function POST(request: Request) {
     const payload = (await request.json()) as Record<string, unknown>;
     if (payload.action === "reset") {
       await resetPaperLedger();
+    } else if (payload.action === "recover") {
+      await exitStoredBetForRecovery({
+        betId: Number(payload.betId),
+        exitPrice: Number(payload.exitPrice),
+        reason: String(payload.reason || "Confirmed market reversal"),
+      });
     } else if (payload.action === "snapshot") {
       await storeModelSnapshot(payload);
     } else if (payload.action === "place") {

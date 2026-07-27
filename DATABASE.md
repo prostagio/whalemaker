@@ -19,7 +19,7 @@ One persistent paper account with:
 
 Every simulated order with its Polymarket condition ID, market slug, exact
 market close time, side, entry price, fair probability, edge, settlement
-status, winning outcome, payout, PnL, and timestamps.
+status, winning outcome or recovery reason, payout, PnL, and timestamps.
 
 ### `model_snapshots`
 
@@ -40,6 +40,11 @@ market conditions.
    waiting for official market settlement.
 5. **Reset ledger** clears the paper bets and research samples and restores
    $100; it does not stop the engine.
+
+Before expiry, the always-on recovery monitor can mark an open position
+`EXITED`. It records proceeds at the displayed executable bid, realized PnL,
+the reversal evidence that triggered the exit, and the exit timestamp. These
+rows appear as **RECOVERED** in Results and remain included in CSV exports.
 
 No wallet, API key, or manual database account is needed for this private paper
 version. Real-money orders are deliberately not stored or submitted.

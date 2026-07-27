@@ -11,7 +11,7 @@ export type StoredBet = {
   entry_price: number;
   fair_probability: number;
   edge: number;
-  status: "OPEN" | "WON" | "LOST" | "VOID";
+  status: "OPEN" | "WON" | "LOST" | "EXITED" | "VOID";
   settlement_outcome: string | null;
   payout: number | null;
   pnl: number | null;
@@ -156,7 +156,7 @@ export async function reconcilePaperBalance() {
   await db().prepare(`UPDATE paper_accounts
     SET balance = starting_balance
       + COALESCE((
-        SELECT SUM(pnl) FROM paper_bets WHERE status IN ('WON', 'LOST')
+        SELECT SUM(pnl) FROM paper_bets WHERE status IN ('WON', 'LOST', 'EXITED')
       ), 0)
       - COALESCE((
         SELECT SUM(stake) FROM paper_bets WHERE status = 'OPEN'
@@ -183,6 +183,7 @@ export async function readPaperLedger() {
       COALESCE(SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_count,
       COALESCE(SUM(CASE WHEN status = 'WON' THEN 1 ELSE 0 END), 0) AS wins,
       COALESCE(SUM(CASE WHEN status = 'LOST' THEN 1 ELSE 0 END), 0) AS losses,
+      COALESCE(SUM(CASE WHEN status = 'EXITED' THEN 1 ELSE 0 END), 0) AS recoveries,
       COALESCE(SUM(CASE WHEN status = 'OPEN' THEN stake ELSE 0 END), 0) AS open_stake,
       COALESCE(SUM(pnl), 0) AS realized_pnl
       FROM paper_bets`).first<{
@@ -190,6 +191,7 @@ export async function readPaperLedger() {
       open_count: number;
       wins: number;
       losses: number;
+      recoveries: number;
       open_stake: number;
       realized_pnl: number;
     }>(),
@@ -208,6 +210,38 @@ export async function readPaperBetsForExport() {
     .prepare("SELECT * FROM paper_bets ORDER BY placed_at DESC")
     .all<StoredBet>();
   return result.results;
+}
+
+export async function exitStoredBetForRecovery(input: {
+  betId: number;
+  exitPrice: number;
+  reason: string;
+}) {
+  const d1 = db();
+  if (!Number.isInteger(input.betId) || input.betId <= 0) {
+    throw new Error("Invalid recovery bet.");
+  }
+  if (!Number.isFinite(input.exitPrice) || input.exitPrice <= 0 || input.exitPrice > 1) {
+    throw new Error("Invalid recovery exit price.");
+  }
+  const bet = await d1
+    .prepare("SELECT * FROM paper_bets WHERE id = ?1 AND status = 'OPEN'")
+    .bind(input.betId)
+    .first<StoredBet>();
+  if (!bet) throw new Error("The paper bet is no longer open.");
+  if (bet.market_end_ms <= Date.now()) {
+    throw new Error("The market has ended; settlement will calculate the result.");
+  }
+  const shares = bet.stake / bet.entry_price;
+  const proceeds = shares * input.exitPrice;
+  const pnl = proceeds - bet.stake;
+  const reason = input.reason.replace(/\s+/g, " ").trim().slice(0, 180) || "Recovery exit";
+  await d1.prepare(`UPDATE paper_bets
+    SET status = 'EXITED', settlement_outcome = ?1, payout = ?2, pnl = ?3, settled_at = ?4
+    WHERE id = ?5 AND status = 'OPEN'`)
+    .bind(`RECOVERY: ${reason}`, proceeds, pnl, Date.now(), input.betId)
+    .run();
+  await reconcilePaperBalance();
 }
 
 export async function placeStoredBet(input: {

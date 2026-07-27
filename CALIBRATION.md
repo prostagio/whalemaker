@@ -60,6 +60,42 @@ The 0.97 EWMA decay corresponds to the documented **22.7566-second half-life**.
 - The persistent balance is recalculated as starting balance plus settled P&L
   minus stakes still held in open bets.
 
+## Recovery exits
+
+Recovery is a paper sell at the current Polymarket bid, not a larger opposite
+bet. An open position is eligible only after 10 seconds and only while the
+Chainlink feed is fresh, the spread is at most 4 cents, Polymarket is accepting
+orders, and top bid depth can cover every share being sold.
+
+The engine scores a possible reversal using:
+
+- the model selecting the opposite side;
+- BTC crossing the strike against the position;
+- raw and calibrated fair value falling below the position;
+- adverse 15, 30, and 60-second momentum;
+- mark-to-market loss relative to a volatility-adjusted stop;
+- time remaining; and
+- a penalty for high 60-second choppiness.
+
+The mark-to-market loss limits are $2.50 in low volatility, $2.00 in medium
+volatility, and $1.50 in high volatility on a $5 position. A normal recovery
+requires a confirmed model flip, an adverse strike crossing, at least two
+adverse momentum windows, fair value below 45%, low choppiness, and a score of
+at least 6. Emergency and final-45-second defenses use the same live evidence
+with tighter loss or fair-value conditions.
+
+At exit, the engine assumes the full position sells at the displayed best bid:
+
+`shares = stake / entry_price`
+
+`recovery proceeds = shares * exit_bid`
+
+`recovery P&L = recovery proceeds - stake`
+
+Recovery never increases the stake and cannot fire without enough displayed bid
+depth. This is still a paper fill assumption and does not include real taker
+fees, latency, partial fills, or queue movement.
+
 ## Recorded research variables
 
 While the engine is running, a database snapshot is saved every five seconds.

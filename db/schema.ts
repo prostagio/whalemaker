@@ -21,7 +21,7 @@ export const paperBets = sqliteTable(
     entryPrice: real("entry_price").notNull(),
     fairProbability: real("fair_probability").notNull(),
     edge: real("edge").notNull(),
-    status: text("status", { enum: ["OPEN", "WON", "LOST", "VOID"] }).notNull().default("OPEN"),
+    status: text("status", { enum: ["OPEN", "WON", "LOST", "EXITED", "VOID"] }).notNull().default("OPEN"),
     settlementOutcome: text("settlement_outcome"),
     payout: real("payout"),
     pnl: real("pnl"),

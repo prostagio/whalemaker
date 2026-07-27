@@ -126,7 +126,9 @@ export async function GET() {
         downAsk: Number.isFinite(downAsk) ? downAsk : 1,
         downBid: Number.isFinite(downBid) ? downBid : 0,
         upAskSize: sizeAt(upBook.asks, upAsk),
+        upBidSize: sizeAt(upBook.bids, upBid),
         downAskSize: sizeAt(downBook.asks, downAsk),
+        downBidSize: sizeAt(downBook.bids, downBid),
         fetchedAt: now,
       },
       { headers: { "Cache-Control": "no-store, max-age=0" } }
