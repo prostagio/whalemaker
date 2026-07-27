@@ -87,55 +87,67 @@ export async function ensurePaperDatabase() {
   ]);
 }
 
-export async function settleResolvedBets() {
+export async function settleExpiredBetsForTesting() {
   const d1 = db();
   const open = await d1
     .prepare("SELECT * FROM paper_bets WHERE status = 'OPEN' AND market_end_ms <= ?1 ORDER BY market_end_ms")
     .bind(Date.now())
     .all<StoredBet>();
-  const byCondition = new Map<string, StoredBet[]>();
+  const byMarket = new Map<string, StoredBet[]>();
   for (const bet of open.results) {
-    byCondition.set(bet.condition_id, [...(byCondition.get(bet.condition_id) ?? []), bet]);
+    const key = `${bet.market_slug}:${bet.market_end_ms}`;
+    byMarket.set(key, [...(byMarket.get(key) ?? []), bet]);
   }
 
-  for (const [conditionId, bets] of byCondition) {
+  for (const bets of byMarket.values()) {
     try {
-      const response = await fetch(`https://clob.polymarket.com/markets/${conditionId}`, {
+      const representative = bets[0];
+      const slugStartSeconds = Number(representative.market_slug.match(/(\d{10})$/)?.[1]);
+      const windowStartMs = Number.isFinite(slugStartSeconds)
+        ? slugStartSeconds * 1_000
+        : representative.market_end_ms - 300_000;
+      const priceUrl = new URL("https://polymarket.com/api/crypto/crypto-price");
+      priceUrl.searchParams.set("symbol", "BTC");
+      priceUrl.searchParams.set("eventStartTime", new Date(windowStartMs).toISOString());
+      priceUrl.searchParams.set("variant", "fiveminute");
+      const response = await fetch(priceUrl, {
         headers: { Accept: "application/json" },
       });
       if (!response.ok) continue;
-      const market = (await response.json()) as {
-        closed?: boolean;
-        tokens?: { outcome?: string; winner?: boolean }[];
+      const windowPrice = (await response.json()) as {
+        openPrice?: number;
+        closePrice?: number;
+        completed?: boolean;
       };
-      const winner = market.tokens?.find((token) => token.winner)?.outcome?.toUpperCase();
-      if (!market.closed || (winner !== "UP" && winner !== "DOWN")) continue;
+      const openPrice = Number(windowPrice.openPrice);
+      const closePrice = Number(windowPrice.closePrice);
+      if (
+        windowPrice.completed !== true ||
+        !Number.isFinite(openPrice) ||
+        !Number.isFinite(closePrice) ||
+        openPrice <= 0 ||
+        closePrice <= 0
+      ) continue;
+      const winner: "UP" | "DOWN" = closePrice >= openPrice ? "UP" : "DOWN";
 
       for (const bet of bets) {
         const won = bet.side === winner;
         const payout = won ? bet.stake / bet.entry_price : 0;
         const pnl = payout - bet.stake;
         const settledAt = Date.now();
-        await d1.batch([
-          d1.prepare(`UPDATE paper_accounts
-            SET balance = balance + ?1, updated_at = ?2
-            WHERE id = 1 AND EXISTS (
-              SELECT 1 FROM paper_bets WHERE id = ?3 AND status = 'OPEN'
-            )`).bind(payout, settledAt, bet.id),
-          d1.prepare(`UPDATE paper_bets
-            SET status = ?1, settlement_outcome = ?2, payout = ?3, pnl = ?4, settled_at = ?5
-            WHERE id = ?6 AND status = 'OPEN'`).bind(
-              won ? "WON" : "LOST",
-              winner,
-              payout,
-              pnl,
-              settledAt,
-              bet.id
-            ),
-        ]);
+        await d1.prepare(`UPDATE paper_bets
+          SET status = ?1, settlement_outcome = ?2, payout = ?3, pnl = ?4, settled_at = ?5
+          WHERE id = ?6 AND status = 'OPEN'`).bind(
+            won ? "WON" : "LOST",
+            winner,
+            payout,
+            pnl,
+            settledAt,
+            bet.id
+          ).run();
       }
     } catch {
-      // Resolution is retried on the next ledger poll.
+      // Test settlement is retried on the next ledger poll.
     }
   }
 }

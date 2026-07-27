@@ -18,6 +18,7 @@ button { cursor:pointer; }
 .icon-button { background:transparent; border:0; font-size:19px; color:#66736b; }
 .shell { max-width:1240px; margin:auto; padding:38px 24px 26px; }
 .error-banner { margin-bottom:18px; border:1px solid #efc9c5; background:#fff1ef; color:#8c3732; border-radius:10px; padding:12px 15px; font-size:12px; line-height:1.45; }
+.test-banner { margin-bottom:18px; border:1px solid #e8d49a; background:#fff8e7; color:#725d27; border-radius:10px; padding:12px 15px; font-size:11px; line-height:1.45; }
 .status-row { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:26px; }
 .eyebrow { font-size:10px; font-weight:900; letter-spacing:1.4px; color:var(--green); margin:0 0 8px; }
 h1 { font-size:34px; line-height:1; letter-spacing:-1.4px; margin:0 0 10px; }

@@ -4,7 +4,7 @@ import {
   readPaperBetsForExport,
   readPaperLedger,
   resetPaperLedger,
-  settleResolvedBets,
+  settleExpiredBetsForTesting,
   storeModelSnapshot,
 } from "../../../db/paper";
 
@@ -32,7 +32,7 @@ const betsCsv = async () => {
 };
 
 const response = async () => {
-  await settleResolvedBets();
+  await settleExpiredBetsForTesting();
   return Response.json(await readPaperLedger(), {
     headers: { "Cache-Control": "no-store, max-age=0" },
   });
@@ -42,7 +42,7 @@ export async function GET(request: Request) {
   try {
     await ensurePaperDatabase();
     if (new URL(request.url).searchParams.get("format") === "csv") {
-      await settleResolvedBets();
+      await settleExpiredBetsForTesting();
       return new Response(await betsCsv(), {
         headers: {
           "Cache-Control": "no-store, max-age=0",

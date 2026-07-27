@@ -392,6 +392,7 @@ export default function Home() {
 
       <section className="shell">
         {(dataError || ledgerError) && <div className="error-banner"><b>Engine paused.</b> {dataError || ledgerError} No bet will be recorded until it recovers.</div>}
+        <div className="test-banner"><b>Testing settlement is active.</b> At each five-minute close, the app calculates UP or DOWN from Polymarket&apos;s Chainlink close versus the strike and updates results and balance immediately.</div>
         <div className="status-row">
           <div>
             <p className="eyebrow">BTC UP OR DOWN · 5 MIN</p>
@@ -495,9 +496,9 @@ export default function Home() {
               {visibleBets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{money(bet.stake)}</span><span>{pct(bet.entry_price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : "open"}>{bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}
             </div>
           )}
-          <p className="csv-note">CSV includes the complete database history: market, side, stake, entry, model fair price, edge, settlement, payout, P&amp;L, and UTC timestamps. · {snapshotCount} model samples stored.</p>
+          <p className="csv-note">CSV includes the complete database history: market, side, stake, entry, model fair price, edge, test settlement, payout, P&amp;L, and UTC timestamps. · {snapshotCount} model samples stored.</p>
         </section>
-        <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Chainlink BTC/USD settlement source</span></footer>
+        <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Immediate self-calculated test settlement</span></footer>
       </section>
     </main>
   );

@@ -34,9 +34,11 @@ market conditions.
    orders.
 3. The dashboard saves qualifying orders immediately and model snapshots every
    five seconds.
-4. The ledger checks expired orders against Polymarket every five seconds.
-5. Once Polymarket closes a market and marks the winner, the paper bet becomes
-   `WON` or `LOST` and the persistent balance is updated.
+4. The ledger checks expired orders every five seconds.
+5. In testing mode, it reads Polymarket's completed five-minute Chainlink
+   opening and closing prices, calculates `UP` or `DOWN` itself, marks the bet
+   `WON` or `LOST`, and updates the persistent balance immediately without
+   waiting for official market settlement.
 6. **Reset** clears the paper bets and research samples and restores $100.
 
 No wallet, API key, or manual database account is needed for this private paper

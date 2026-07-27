@@ -52,10 +52,13 @@ The 0.97 EWMA decay corresponds to the documented **22.7566-second half-life**.
 - Window start comes from Polymarket's `eventStartTime`.
 - The close countdown and stored settlement cutoff come from the market's
   `endDate`; the app does not manufacture its own five-minute timer.
-- After the cutoff, an open paper bet remains `OPEN` until Polymarket's CLOB
-  market record is closed and one outcome token is marked as the winner.
+- Testing settlement does not wait for Polymarket's official resolution. After
+  the cutoff, the app reads the completed Chainlink price window from
+  Polymarket and calculates the outcome itself.
+- `UP` wins when `closePrice >= openPrice`; otherwise `DOWN` wins.
 - Winning payout is `stake / entry price`; losing payout is zero.
-- Payout is credited to the persistent paper balance only once.
+- The persistent balance is recalculated as starting balance plus settled P&L
+  minus stakes still held in open bets.
 
 ## Recorded research variables
 
