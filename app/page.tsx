@@ -508,6 +508,23 @@ export default function Home() {
   const cashReceived = transactions
     .filter((transaction) => transaction.action === "SELL")
     .reduce((sum, transaction) => sum + transaction.cashFlow, 0);
+  const ongoingBets = bets
+    .filter((bet) => bet.status === "OPEN")
+    .map((bet) => {
+      const shares = bet.shares ?? bet.stake / bet.entry_price;
+      const currentBid = live?.slug === bet.market_slug
+        ? bet.side === "UP" ? live.upBid : live.downBid
+        : null;
+      const currentValue = currentBid != null ? shares * currentBid : null;
+      return {
+        ...bet,
+        shares,
+        currentBid,
+        currentValue,
+        unrealizedPnl: currentValue != null ? currentValue - bet.stake : null,
+      };
+    })
+    .sort((a, b) => b.placed_at - a.placed_at);
   const gameTotals = Array.from(bets.reduce((games, bet) => {
     const existing = games.get(bet.market_slug) ?? {
       slug: bet.market_slug,
@@ -678,6 +695,30 @@ export default function Home() {
             <div><span>Received from sells shown</span><strong className="positive">+{money(cashReceived)}</strong></div>
             <div><span>Total realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : "−"}{money(Math.abs(stats.realized_pnl))}</strong></div>
           </div>
+          <section className="ongoing-bets" aria-labelledby="ongoing-bets-title">
+            <div className="ongoing-head">
+              <div><p className="eyebrow">LIVE POSITIONS</p><h3 id="ongoing-bets-title">Ongoing bets</h3></div>
+              <span className="ongoing-count"><i /> {ongoingBets.length} OPEN</span>
+            </div>
+            {ongoingBets.length === 0 ? (
+              <p className="game-empty">There are no ongoing bets right now.</p>
+            ) : (
+              <div className="ongoing-table">
+                <div className="ongoing-row ongoing-header"><span>Position / game</span><span>Direction</span><span>Shares</span><span>Entry</span><span>Total bet</span><span>Current exit value</span><span>Unrealized P&amp;L</span></div>
+                {ongoingBets.map((bet) => (
+                  <div className="ongoing-row" key={bet.id}>
+                    <span><b>#{bet.id} · ends {new Date(bet.market_end_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</b><small>Bought {new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</small></span>
+                    <b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b>
+                    <strong>{bet.shares.toFixed(2)}</strong>
+                    <span>{(bet.entry_price * 100).toFixed(1)}¢</span>
+                    <strong className="negative">{money(bet.stake)}</strong>
+                    <span><strong>{bet.currentValue == null ? "—" : money(bet.currentValue)}</strong><small>{bet.currentBid == null ? "Waiting for live bid" : `at ${(bet.currentBid * 100).toFixed(1)}¢ bid`}</small></span>
+                    <strong className={bet.unrealizedPnl == null ? "pending-pnl" : bet.unrealizedPnl >= 0 ? "positive" : "negative"}>{bet.unrealizedPnl == null ? "—" : `${bet.unrealizedPnl >= 0 ? "+" : "−"}${money(Math.abs(bet.unrealizedPnl))}`}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
           <section className="game-totals" aria-labelledby="game-totals-title">
             <div className="game-totals-head">
               <div><p className="eyebrow">PER 5-MINUTE MARKET</p><h3 id="game-totals-title">Total bet and return per game</h3></div>
