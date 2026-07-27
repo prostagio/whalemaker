@@ -30,6 +30,8 @@ button.secondary, button.primary, button.stop { border-radius:9px; padding:11px 
 button.secondary { background:#fff; color:var(--ink); }
 button.primary { background:var(--ink); color:white; border-color:var(--ink); min-width:135px; }
 button.stop { background:#fff0ee; color:var(--red); border-color:#f0cbc7; min-width:135px; }
+.engine-lock { display:flex; align-items:center; border:1px solid #cde9d9; background:#edf8f2; color:var(--green-dark); border-radius:9px; padding:10px 13px; font-size:10px; font-weight:900; letter-spacing:.7px; }
+.engine-lock i { width:7px; height:7px; border-radius:50%; background:#35aa73; box-shadow:0 0 0 3px #d4f0e1; margin-right:8px; }
 .market-prices { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:18px; }
 .outcome-price { background:#fff; border:1px solid var(--line); border-radius:14px; padding:17px 20px; box-shadow:0 4px 18px rgba(25,45,34,.03); }
 .outcome-price>div { display:flex; align-items:center; justify-content:space-between; gap:16px; }
@@ -66,11 +68,9 @@ button.stop { background:#fff0ee; color:var(--red); border-color:#f0cbc7; min-wi
 .comparison span,.comparison b { display:block; }.comparison span { font-size:10px; color:var(--muted); margin-bottom:6px; }.comparison b { font-size:16px; }
 .bet-button { width:100%; border:0; background:var(--green); color:#fff; border-radius:9px; padding:13px; font-weight:800; }
 .bet-button:disabled { background:#dfe5e1; color:#88938c; cursor:not-allowed; }
-.toggle-row { display:flex; justify-content:space-between; align-items:center; padding-top:17px; }
-.toggle-row b,.toggle-row small { display:block; font-size:11px; }.toggle-row small { color:var(--muted); margin-top:3px; }
-.toggle-row input { appearance:none; width:38px; height:22px; border-radius:20px; background:#ccd4cf; position:relative; transition:.2s; }
-.toggle-row input::after { content:""; position:absolute; width:16px; height:16px; border-radius:50%; background:#fff; top:3px; left:3px; transition:.2s; }
-.toggle-row input:checked { background:var(--green); }.toggle-row input:checked::after { transform:translateX(16px); }
+.always-on-row { display:flex; justify-content:space-between; align-items:center; gap:14px; padding-top:17px; }
+.always-on-row b,.always-on-row small { display:block; font-size:11px; }.always-on-row small { color:var(--muted); margin-top:3px; line-height:1.4; }
+.always-on-row>strong { color:var(--green-dark); background:#edf8f2; border-radius:7px; padding:7px 9px; font-size:9px; letter-spacing:.6px; }
 .healthy { color:var(--green); background:#edf8f2; padding:7px 9px; font-size:10px; font-weight:800; border-radius:7px; }
 .unhealthy { color:var(--red); background:#fff0ee; padding:7px 9px; font-size:10px; font-weight:800; border-radius:7px; }
 .health-list>div { display:flex; align-items:center; gap:12px; padding:14px 0; border-bottom:1px solid var(--line); }

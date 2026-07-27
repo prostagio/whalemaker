@@ -29,17 +29,17 @@ market conditions.
 
 ## How to use it
 
-1. Open the deployed dashboard and start the engine.
-2. Keep **Auto-bet qualifying signals** enabled if you want automatic paper
-   orders.
-3. The dashboard saves qualifying orders immediately and model snapshots every
+1. Open the deployed dashboard. The engine starts automatically and cannot be
+   paused or switched off while the page is running.
+2. The dashboard saves qualifying orders immediately and model snapshots every
    five seconds.
-4. The ledger checks expired orders every five seconds.
-5. In testing mode, it reads Polymarket's completed five-minute Chainlink
+3. The ledger checks expired orders every five seconds.
+4. In testing mode, it reads Polymarket's completed five-minute Chainlink
    opening and closing prices, calculates `UP` or `DOWN` itself, marks the bet
    `WON` or `LOST`, and updates the persistent balance immediately without
    waiting for official market settlement.
-6. **Reset** clears the paper bets and research samples and restores $100.
+5. **Reset ledger** clears the paper bets and research samples and restores
+   $100; it does not stop the engine.
 
 No wallet, API key, or manual database account is needed for this private paper
 version. Real-money orders are deliberately not stored or submitted.

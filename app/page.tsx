@@ -43,7 +43,6 @@ const money = (n: number) => `$${n.toFixed(2)}`;
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
 export default function Home() {
-  const [running, setRunning] = useState(false);
   const [live, setLive] = useState<LiveMarket | null>(null);
   const [chainlink, setChainlink] = useState<{ price: number; timestamp: number } | null>(null);
   const [dataError, setDataError] = useState("");
@@ -57,7 +56,6 @@ export default function Home() {
   const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, open_stake: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
   const [ledgerTab, setLedgerTab] = useState<"open" | "results">("results");
-  const [autoBet, setAutoBet] = useState(true);
   const [lastBetAt, setLastBetAt] = useState(0);
   const [clock, setClock] = useState(() => Date.now());
   const [tickHistory, setTickHistory] = useState<{ price: number; timestamp: number }[]>([]);
@@ -299,15 +297,14 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (!(running && autoBet && !model.blocked && !placing && Date.now() - lastBetAt > 20_000)) return;
+    if (model.blocked || placing || clock - lastBetAt <= 20_000) return;
     const pending = window.setTimeout(() => placeBet(), 0);
     return () => window.clearTimeout(pending);
     // The live model intentionally controls this effect cadence.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, autoBet, model.blocked, model.side, placing]);
+  }, [clock, model.blocked, model.side, placing]);
 
   const reset = async () => {
-    setRunning(false);
     setLastBetAt(0);
     try {
       const response = await fetch("/api/paper", {
@@ -362,7 +359,7 @@ export default function Home() {
   } : null;
 
   useEffect(() => {
-    if (!running || !currentSnapshot || clock - lastSnapshotAt.current < 5_000) return;
+    if (!currentSnapshot || clock - lastSnapshotAt.current < 5_000) return;
     lastSnapshotAt.current = clock;
     const record = async () => {
       try {
@@ -380,7 +377,7 @@ export default function Home() {
     return () => window.clearTimeout(pending);
     // The recorder intentionally samples the latest complete model.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clock, running]);
+  }, [clock]);
 
   return (
     <main>
@@ -401,10 +398,8 @@ export default function Home() {
             {live && <a className="market-link" href={live.marketUrl} target="_blank" rel="noreferrer">View active market on Polymarket ↗</a>}
           </div>
           <div className="controls">
-            <button className="secondary" onClick={reset}>Reset</button>
-            <button className={running ? "stop" : "primary"} onClick={() => setRunning((value) => !value)} disabled={!live}>
-              {running ? "■ Pause engine" : "▶ Start engine"}
-            </button>
+            <span className="engine-lock"><i /> ENGINE ALWAYS ON</span>
+            <button className="secondary" onClick={reset}>Reset ledger</button>
           </div>
         </div>
 
@@ -429,7 +424,7 @@ export default function Home() {
           <article><span>Available balance</span><strong>{money(bankroll)}</strong><small>{money(settledBalance)} after results · {money(stats.open_stake)} in open bets</small></article>
           <article><span>Fixed bet size</span><strong>$5.00</strong><small>{Math.floor(bankroll / 5)} bets remaining</small></article>
           <article><span>Chainlink BTC/USD</span><strong>{btc ? `$${btc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</strong><small className={btc >= strike ? "positive" : "negative"}>{btc && strike ? `${btc >= strike ? "▲" : "▼"} ${Math.abs((btc / strike - 1) * 10000).toFixed(1)} bps vs $${strike.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "Waiting for Polymarket"}</small></article>
-          <article><span>Engine state</span><strong className={running ? "positive" : ""}>{running ? "Watching" : "Paused"}</strong><small>{freshness} · {dataAge < Infinity ? `${Math.round(dataAge)}ms data age` : "No data yet"}</small></article>
+          <article><span>Engine state</span><strong className="positive">Always on</strong><small>{freshness} · {dataAge < Infinity ? `${Math.round(dataAge)}ms data age` : "No data yet"}</small></article>
         </section>
 
         <div className="grid">
@@ -447,8 +442,8 @@ export default function Home() {
               <div><span>Polymarket UP ask</span><b>{live ? pct(model.upAsk) : "—"}</b></div>
               <div><span>Net edge</span><b className={model.bestEdge >= 0.02 ? "positive" : ""}>{live ? `${(model.bestEdge * 100).toFixed(1)}¢` : "—"}</b></div>
             </div>
-            <button className="bet-button" disabled={!running || model.blocked || bankroll < 5 || placing} onClick={() => placeBet()}>{placing ? "Recording paper bet…" : `Place $5 paper bet on ${model.side}`}</button>
-            <label className="toggle-row"><span><b>Auto-bet qualifying signals</b><small>Maximum one paper bet every 20 seconds</small></span><input type="checkbox" checked={autoBet} onChange={(event) => setAutoBet(event.target.checked)} /></label>
+            <button className="bet-button" disabled={model.blocked || bankroll < 5 || placing} onClick={() => placeBet()}>{placing ? "Recording paper bet…" : `Place $5 paper bet on ${model.side}`}</button>
+            <div className="always-on-row"><span><b>Automatic execution is locked on</b><small>The engine continuously watches and records a maximum of one qualifying paper bet every 20 seconds.</small></span><strong>ACTIVE</strong></div>
           </section>
 
           <section className="card">
