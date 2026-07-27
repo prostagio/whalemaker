@@ -50,10 +50,11 @@ export default function Home() {
   const [feedStatus, setFeedStatus] = useState<"connecting" | "live" | "offline">("connecting");
   const [variance, setVariance] = useState(VARIANCE_FLOOR);
   const [bankroll, setBankroll] = useState(100);
+  const [startingBalance, setStartingBalance] = useState(100);
   const [bets, setBets] = useState<Bet[]>([]);
   const [ledgerError, setLedgerError] = useState("");
   const [placing, setPlacing] = useState(false);
-  const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, realized_pnl: 0 });
+  const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, open_stake: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
   const [ledgerTab, setLedgerTab] = useState<"open" | "results">("results");
   const [autoBet, setAutoBet] = useState(true);
@@ -64,12 +65,13 @@ export default function Home() {
   const lastSnapshotAt = useRef(0);
 
   const applyLedger = (payload: {
-    account?: { balance?: number };
+    account?: { balance?: number; starting_balance?: number };
     bets?: Bet[];
     stats?: typeof stats;
     snapshotCount?: number;
   }) => {
     if (typeof payload.account?.balance === "number") setBankroll(payload.account.balance);
+    if (typeof payload.account?.starting_balance === "number") setStartingBalance(payload.account.starting_balance);
     if (payload.bets) setBets(payload.bets);
     if (payload.stats) setStats(payload.stats);
     if (typeof payload.snapshotCount === "number") setSnapshotCount(payload.snapshotCount);
@@ -331,6 +333,7 @@ export default function Home() {
     : bets.filter((bet) => bet.status === "OPEN");
   const settledCount = stats.wins + stats.losses;
   const winRate = settledCount ? stats.wins / settledCount : 0;
+  const settledBalance = startingBalance + stats.realized_pnl;
 
   const currentSnapshot = live && chainlink ? {
     action: "snapshot",
@@ -422,7 +425,7 @@ export default function Home() {
         </section>
 
         <section className="metrics">
-          <article><span>Persistent balance</span><strong>{money(bankroll)}</strong><small>{money(stats.realized_pnl)} realized · {stats.open_count} open</small></article>
+          <article><span>Available balance</span><strong>{money(bankroll)}</strong><small>{money(settledBalance)} after results · {money(stats.open_stake)} in open bets</small></article>
           <article><span>Fixed bet size</span><strong>$5.00</strong><small>{Math.floor(bankroll / 5)} bets remaining</small></article>
           <article><span>Chainlink BTC/USD</span><strong>{btc ? `$${btc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</strong><small className={btc >= strike ? "positive" : "negative"}>{btc && strike ? `${btc >= strike ? "▲" : "▼"} ${Math.abs((btc / strike - 1) * 10000).toFixed(1)} bps vs $${strike.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "Waiting for Polymarket"}</small></article>
           <article><span>Engine state</span><strong className={running ? "positive" : ""}>{running ? "Watching" : "Paused"}</strong><small>{freshness} · {dataAge < Infinity ? `${Math.round(dataAge)}ms data age` : "No data yet"}</small></article>
@@ -477,6 +480,7 @@ export default function Home() {
               <div><span>Losses</span><strong className="negative">{stats.losses}</strong></div>
               <div><span>Win rate</span><strong>{pct(winRate)}</strong></div>
               <div><span>Realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : ""}{money(stats.realized_pnl)}</strong></div>
+              <div><span>Balance after results</span><strong className={settledBalance >= startingBalance ? "positive" : "negative"}>{money(settledBalance)}</strong></div>
             </div>
           )}
           {visibleBets.length === 0 ? (

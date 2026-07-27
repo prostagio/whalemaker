@@ -140,7 +140,23 @@ export async function settleResolvedBets() {
   }
 }
 
+export async function reconcilePaperBalance() {
+  await db().prepare(`UPDATE paper_accounts
+    SET balance = starting_balance
+      + COALESCE((
+        SELECT SUM(pnl) FROM paper_bets WHERE status IN ('WON', 'LOST')
+      ), 0)
+      - COALESCE((
+        SELECT SUM(stake) FROM paper_bets WHERE status = 'OPEN'
+      ), 0),
+      updated_at = ?1
+    WHERE id = 1`)
+    .bind(Date.now())
+    .run();
+}
+
 export async function readPaperLedger() {
+  await reconcilePaperBalance();
   const d1 = db();
   const [accountResult, betsResult, statsResult, snapshotsResult] = await Promise.all([
     d1.prepare("SELECT * FROM paper_accounts WHERE id = 1").first<{
@@ -155,12 +171,14 @@ export async function readPaperLedger() {
       COALESCE(SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END), 0) AS open_count,
       COALESCE(SUM(CASE WHEN status = 'WON' THEN 1 ELSE 0 END), 0) AS wins,
       COALESCE(SUM(CASE WHEN status = 'LOST' THEN 1 ELSE 0 END), 0) AS losses,
+      COALESCE(SUM(CASE WHEN status = 'OPEN' THEN stake ELSE 0 END), 0) AS open_stake,
       COALESCE(SUM(pnl), 0) AS realized_pnl
       FROM paper_bets`).first<{
       total: number;
       open_count: number;
       wins: number;
       losses: number;
+      open_stake: number;
       realized_pnl: number;
     }>(),
     d1.prepare("SELECT COUNT(*) AS count FROM model_snapshots").first<{ count: number }>(),
@@ -192,6 +210,7 @@ export async function placeStoredBet(input: {
   edge: number;
 }) {
   const d1 = db();
+  await reconcilePaperBalance();
   const account = await d1
     .prepare("SELECT balance FROM paper_accounts WHERE id = 1")
     .first<{ balance: number }>();
