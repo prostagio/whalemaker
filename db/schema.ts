@@ -36,6 +36,11 @@ export const paperBets = sqliteTable(
   ]
 );
 
+export const paperMarketLocks = sqliteTable("paper_market_locks", {
+  marketSlug: text("market_slug").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
 export const modelSnapshots = sqliteTable(
   "model_snapshots",
   {

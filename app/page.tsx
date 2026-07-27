@@ -57,8 +57,15 @@ type LiveMarket = {
 
 const VARIANCE_FLOOR = 2.3020308442843487e-9;
 const FIXED_SHARES = 5;
-const MIN_ENTRY_PRICE = 0.10;
 const MAX_DATA_AGE_MS = 3_000;
+const MIN_HISTORY_MS = 60_000;
+const ENTRY_WINDOW_MIN_SECONDS = 60;
+const ENTRY_WINDOW_MAX_SECONDS = 210;
+const MIN_CONSENSUS = 0.55;
+const MIN_FAVORITE_PRICE = 0.55;
+const MAX_FAVORITE_PRICE = 0.90;
+const MAX_ENTRY_SPREAD = 0.02;
+const MIN_ENTRY_DEPTH = 20;
 const normalCdf = (x: number) => {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
   const d = 0.3989423 * Math.exp((-x * x) / 2);
@@ -228,7 +235,10 @@ export default function Home() {
   const dataAge = chainlink ? Math.max(0, clock - chainlink.timestamp) : Infinity;
   const spread = live ? Math.max(live.upAsk - live.upBid, live.downAsk - live.downBid) : 1;
   const depth = live ? Math.min(live.upAskSize, live.downAskSize) : 0;
-  const marketUp = live ? (live.upAsk + live.upBid) / 2 : 0.5;
+  const upMidpoint = live ? (live.upAsk + live.upBid) / 2 : 0.5;
+  const downMidpoint = live ? (live.downAsk + live.downBid) / 2 : 0.5;
+  const midpointTotal = upMidpoint + downMidpoint;
+  const marketUp = midpointTotal > 0 ? upMidpoint / midpointTotal : 0.5;
   const momentum = (lookbackSeconds: number) => {
     const history = tickHistory;
     const latest = history[history.length - 1];
@@ -247,6 +257,9 @@ export default function Home() {
     .filter(Boolean);
   const signFlips = signs.slice(1).filter((sign, index) => sign !== signs[index]).length;
   const choppiness60 = signs.length > 1 ? signFlips / (signs.length - 1) : 0;
+  const historySpanMs = tickHistory.length > 1
+    ? tickHistory[tickHistory.length - 1].timestamp - tickHistory[0].timestamp
+    : 0;
 
   const model = useMemo(() => {
     const qUsed = Math.max(variance, VARIANCE_FLOOR);
@@ -257,44 +270,59 @@ export default function Home() {
     const upAsk = live?.upAsk ?? 1;
     const downAsk = live?.downAsk ?? 1;
     const spreadPenalty = 0.5 * spread;
-    const upEdge = calibrated - upAsk - 0.01 - spreadPenalty;
-    const downEdge = 1 - calibrated - downAsk - 0.01 - spreadPenalty;
-    const side: Side = upEdge >= downEdge ? "UP" : "DOWN";
-    const bestEdge = Math.max(upEdge, downEdge);
+    const upFeePerShare = 0.07 * upAsk * (1 - upAsk);
+    const downFeePerShare = 0.07 * downAsk * (1 - downAsk);
+    const upEdge = calibrated - upAsk - upFeePerShare - 0.01 - spreadPenalty;
+    const downEdge = 1 - calibrated - downAsk - downFeePerShare - 0.01 - spreadPenalty;
+    const side: Side = marketUp >= 0.5 ? "UP" : "DOWN";
+    const modelSide: Side = raw >= 0.5 ? "UP" : "DOWN";
+    const strikeSide: Side = btc >= strike ? "UP" : "DOWN";
     const selectedAsk = side === "UP" ? upAsk : downAsk;
+    const selectedSpread = live
+      ? side === "UP" ? live.upAsk - live.upBid : live.downAsk - live.downBid
+      : 1;
+    const selectedDepth = live
+      ? side === "UP" ? live.upAskSize : live.downAskSize
+      : 0;
+    const marketConfidence = side === "UP" ? marketUp : 1 - marketUp;
     const orderCost = FIXED_SHARES * selectedAsk;
     const sigmaBpsPerSqrtSecond = Math.sqrt(qUsed) * 10_000;
     const volatilityRegime =
       sigmaBpsPerSqrtSecond < 0.5 ? "LOW" : sigmaBpsPerSqrtSecond < 1.25 ? "MEDIUM" : "HIGH";
-    const disagreement = Math.abs(raw - marketUp);
-    const sameSideLead = side === "UP" ? raw - marketUp : marketUp - raw;
-    const adaptiveEligible =
-      volatilityRegime !== "HIGH" && sameSideLead >= 0.0025 && disagreement <= 0.06;
-    const requiredEdge = adaptiveEligible ? 0.005 : 0.02;
-    const dominantPrice = Math.max(upAsk, downAsk);
-    const qualityPass = Boolean(live?.acceptingOrders) && spread <= 0.04 && depth >= 5 && dataAge <= MAX_DATA_AGE_MS;
+    const momentumPass = side === "UP"
+      ? momentum15 >= 1 && momentum30 >= 0.5 && momentum60 > -1
+      : momentum15 <= -1 && momentum30 <= -0.5 && momentum60 < 1;
+    const alreadyTraded = Boolean(live && bets.some((bet) => bet.market_slug === live.slug));
     const blockedReasons = [
       !live ? "no active Polymarket market" : "",
       !chainlink || feedStatus !== "live" ? "Chainlink feed offline" : "",
       dataError ? "market API unavailable" : "",
       ledgerError ? "paper database unavailable" : "",
-      seconds < 15 ? "less than 15 seconds remain" : "",
-      bestEdge < requiredEdge ? `edge below ${(requiredEdge * 100).toFixed(1)}¢` : "",
-      dominantPrice < 0.8 ? "no outcome is at least 80¢" : "",
-      selectedAsk < MIN_ENTRY_PRICE ? "selected share price is below the 10¢ minimum" : "",
+      historySpanMs < MIN_HISTORY_MS ? "collecting 60 seconds of price history" : "",
+      seconds > ENTRY_WINDOW_MAX_SECONDS ? "entry window has not opened yet" : "",
+      seconds < ENTRY_WINDOW_MIN_SECONDS ? "entry window is closed for this game" : "",
+      marketConfidence < MIN_CONSENSUS ? "Polymarket has no clear 55% favorite" : "",
+      modelSide !== side ? "Chainlink model disagrees with Polymarket consensus" : "",
+      strikeSide !== side ? "BTC is on the opposite side of the strike" : "",
+      !momentumPass ? "15/30/60-second momentum does not confirm the favorite" : "",
+      choppiness60 > 0.55 ? "60-second price action is too choppy" : "",
+      volatilityRegime === "HIGH" ? "volatility regime is HIGH" : "",
+      selectedAsk < MIN_FAVORITE_PRICE ? "selected favorite costs less than 55¢" : "",
+      selectedAsk > MAX_FAVORITE_PRICE ? "selected favorite costs more than 90¢" : "",
+      alreadyTraded ? "this five-minute game already has a position" : "",
       bankroll < orderCost ? `balance below ${money(orderCost)} order cost` : "",
-      spread > 0.04 ? "spread above 4¢" : "",
-      depth < 5 ? "top depth below 5 shares" : "",
+      selectedSpread > MAX_ENTRY_SPREAD ? "favorite-side spread is above 2¢" : "",
+      selectedDepth < MIN_ENTRY_DEPTH ? "favorite-side ask depth is below 20 shares" : "",
       dataAge > MAX_DATA_AGE_MS ? "Chainlink data older than 3,000ms" : "",
       !live?.acceptingOrders ? "Polymarket is not accepting orders" : "",
     ].filter(Boolean);
     const blocked = blockedReasons.length > 0;
     return {
       qUsed, distance, z, raw, calibrated, upAsk, downAsk, upEdge, downEdge,
-      side, bestEdge, blocked, qualityPass, blockedReasons, volatilityRegime,
-      requiredEdge, adaptiveEligible, selectedAsk, orderCost,
+      side, blocked, blockedReasons, volatilityRegime,
+      selectedAsk, selectedSpread, selectedDepth, orderCost, marketConfidence, modelSide, momentumPass,
     };
-  }, [bankroll, btc, chainlink, dataAge, dataError, depth, feedStatus, ledgerError, live, marketUp, seconds, spread, strike, variance]);
+  }, [bankroll, bets, btc, chainlink, choppiness60, dataAge, dataError, feedStatus, historySpanMs, ledgerError, live, marketUp, momentum15, momentum30, momentum60, seconds, spread, strike, variance]);
 
   const placeBet = async (side = model.side) => {
     if (bankroll < model.orderCost || model.blocked || !live || placing) return;
@@ -315,7 +343,7 @@ export default function Home() {
           side,
           shares: FIXED_SHARES,
           entryPrice: price,
-          fairProbability: side === "UP" ? model.calibrated : 1 - model.calibrated,
+          fairProbability: model.marketConfidence,
           edge,
         }),
       });
@@ -343,18 +371,14 @@ export default function Home() {
         const bidSize = bet.side === "UP" ? live.upBidSize : live.downBidSize;
         const shares = bet.shares ?? bet.stake / bet.entry_price;
         const unrealizedPnl = shares * currentBid - bet.stake;
-        const originalFair = bet.side === "UP" ? model.calibrated : 1 - model.calibrated;
+        const originalFair = bet.side === "UP" ? marketUp : 1 - marketUp;
         const rawOriginalFair = bet.side === "UP" ? model.raw : 1 - model.raw;
         const modelFlipped = model.side !== bet.side;
         const strikeAgainst = bet.side === "UP" ? btc < strike : btc >= strike;
         const adverseMomentum = [momentum15, momentum30, momentum60].filter((value) =>
           bet.side === "UP" ? value <= -0.5 : value >= 0.5
         ).length;
-        const lossLimit = -bet.stake * (
-          model.volatilityRegime === "HIGH" ? 0.3 :
-          model.volatilityRegime === "MEDIUM" ? 0.4 :
-          0.5
-        );
+        const lossLimit = -bet.stake * 0.3;
         const hardLoss = unrealizedPnl <= lossLimit;
         const choppy = choppiness60 > 0.65;
         const score =
@@ -380,9 +404,7 @@ export default function Home() {
           score >= 6;
         const emergencyStop =
           hardLoss &&
-          modelFlipped &&
-          strikeAgainst &&
-          score >= 5;
+          currentBid < bet.entry_price;
         const lateDefense =
           seconds <= 45 &&
           modelFlipped &&
@@ -404,7 +426,7 @@ export default function Home() {
       .filter((candidate) => candidate.shouldExit)
       .sort((a, b) => a.unrealizedPnl - b.unrealizedPnl);
     return candidates[0] ?? null;
-  }, [bets, btc, chainlink, choppiness60, clock, dataAge, live, model.calibrated, model.raw, model.side, model.volatilityRegime, momentum15, momentum30, momentum60, seconds, spread, strike]);
+  }, [bets, btc, chainlink, choppiness60, clock, dataAge, live, marketUp, model.raw, model.side, model.volatilityRegime, momentum15, momentum30, momentum60, seconds, spread, strike]);
 
   const recoverBet = async () => {
     if (!recoveryCandidate || recoveringBetId != null) return;
@@ -464,10 +486,17 @@ export default function Home() {
     }
   };
 
-  const confidence = Math.min(99, Math.round(Math.abs(model.calibrated - 0.5) * 120 + 42));
+  const confidence = Math.round(model.marketConfidence * 100);
   const signalLabel = model.blocked ? "WAIT" : `BET ${model.side}`;
   const freshness = dataAge <= MAX_DATA_AGE_MS ? "LIVE" : dataAge < Infinity ? "STALE" : feedStatus.toUpperCase();
-  const qualityCount = [spread <= 0.04, depth >= 5, dataAge <= MAX_DATA_AGE_MS, Boolean(live?.acceptingOrders)].filter(Boolean).length;
+  const qualityCount = [
+    model.marketConfidence >= MIN_CONSENSUS,
+    model.modelSide === model.side,
+    model.momentumPass,
+    model.selectedSpread <= MAX_ENTRY_SPREAD,
+    model.selectedDepth >= MIN_ENTRY_DEPTH,
+    dataAge <= MAX_DATA_AGE_MS,
+  ].filter(Boolean).length;
   const settledBalance = startingBalance + stats.realized_pnl;
   const transactions = bets.flatMap<ShareTransaction>((bet) => {
     const shares = bet.shares ?? bet.stake / bet.entry_price;
@@ -583,7 +612,7 @@ export default function Home() {
     momentum60Bps: momentum60,
     choppiness60,
     volatilityRegime: model.volatilityRegime,
-    requiredEdge: model.requiredEdge,
+    requiredEdge: 0,
     signal: model.blocked ? "WAIT" : `BET_${model.side}`,
     blockedReason: model.blockedReasons.join("; "),
   } : null;
@@ -661,32 +690,34 @@ export default function Home() {
           <section className="card signal-card">
             <div className="card-head"><div><p className="eyebrow">CURRENT DECISION</p><h2>Signal</h2></div><span className={`signal ${model.blocked ? "wait" : model.side.toLowerCase()}`}>{signalLabel}</span></div>
             <div className="fair">
-              <div className="ring" style={{ "--p": `${model.calibrated * 360}deg` } as React.CSSProperties}><div><strong>{pct(model.calibrated)}</strong><span>Fair UP</span></div></div>
+              <div className="ring" style={{ "--p": `${marketUp * 360}deg` } as React.CSSProperties}><div><strong>{pct(marketUp)}</strong><span>Market UP</span></div></div>
               <div className="fair-copy">
-                <span>Model confidence</span><strong>{confidence}/100</strong><div className="bar"><i style={{ width: `${confidence}%` }} /></div>
-                <p>{model.blocked ? "The edge or a live-data safety gate does not pass. No bet will be placed." : `${model.side} clears all risk gates with ${(model.bestEdge * 100).toFixed(1)}¢ net edge.`}</p>
+                <span>Polymarket consensus</span><strong>{confidence}/100</strong><div className="bar"><i style={{ width: `${confidence}%` }} /></div>
+                <p>{model.blocked ? `Waiting: ${model.blockedReasons[0] ?? "confirmation gates do not pass"}.` : `${model.side} is Polymarket's favorite and Chainlink, momentum, liquidity, and volatility all confirm it.`}</p>
               </div>
             </div>
             <div className="comparison">
-              <div><span>Model fair UP</span><b>{pct(model.calibrated)}</b></div>
-              <div><span>Polymarket UP ask</span><b>{live ? pct(model.upAsk) : "—"}</b></div>
-              <div><span>Net edge</span><b className={model.bestEdge >= 0.02 ? "positive" : ""}>{live ? `${(model.bestEdge * 100).toFixed(1)}¢` : "—"}</b></div>
+              <div><span>Polymarket favorite</span><b>{live ? `${model.side} · ${pct(model.marketConfidence)}` : "—"}</b></div>
+              <div><span>Favorite ask</span><b>{live ? pct(model.selectedAsk) : "—"}</b></div>
+              <div><span>Chainlink confirmation</span><b className={model.modelSide === model.side ? "positive" : "negative"}>{live ? model.modelSide === model.side ? "AGREES" : "DISAGREES" : "—"}</b></div>
             </div>
             <button className="bet-button" disabled={model.blocked || bankroll < model.orderCost || placing || recoveringBetId != null} onClick={() => placeBet()}>{placing ? "Recording paper order…" : recoveringBetId != null ? "Executing recovery exit…" : `Buy 5 ${model.side} shares for ${money(model.orderCost)}`}</button>
             <div className="always-on-row"><span><b>Automatic execution and recovery are locked on</b><small>Entry signals run continuously. Confirmed reversals exit at the executable bid instead of doubling the stake.</small></span><strong>ACTIVE</strong></div>
           </section>
 
           <section className="card">
-            <div className="card-head"><div><p className="eyebrow">WHY THE MODEL DECIDED</p><h2>Signal health</h2></div><span className={qualityCount === 4 ? "healthy" : "unhealthy"}>● {qualityCount}/4 healthy</span></div>
+            <div className="card-head"><div><p className="eyebrow">WHY THE ENGINE DECIDED</p><h2>Consensus health</h2></div><span className={qualityCount === 6 ? "healthy" : "unhealthy"}>● {qualityCount}/6 healthy</span></div>
             <div className="health-list">
               <div><span className="health-icon">↕</span><p><b>Distance from strike</b><small>{live ? `${model.distance >= 0 ? "Above" : "Below"} by ${Math.abs(model.distance * 10000).toFixed(2)} bps` : "Waiting for Chainlink"}</small></p><strong>{live ? model.distance >= 0 ? "UP" : "DOWN" : "WAIT"}</strong></div>
-              <div><span className="health-icon">≈</span><p><b>Polymarket spread</b><small>UP {live ? `${((live.upAsk - live.upBid) * 100).toFixed(1)}¢` : "—"} · DOWN {live ? `${((live.downAsk - live.downBid) * 100).toFixed(1)}¢` : "—"}</small></p><strong>{spread <= 0.04 ? "PASS" : "BLOCK"}</strong></div>
+              <div><span className="health-icon">◎</span><p><b>Polymarket consensus</b><small>{live ? `${model.side} leads at ${pct(model.marketConfidence)}` : "Waiting for market"}</small></p><strong>{model.marketConfidence >= MIN_CONSENSUS ? "PASS" : "BLOCK"}</strong></div>
+              <div><span className="health-icon">↗</span><p><b>Momentum confirmation</b><small>15/30/60s: {momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</small></p><strong>{model.momentumPass ? "PASS" : "BLOCK"}</strong></div>
+              <div><span className="health-icon">≈</span><p><b>Polymarket spread</b><small>UP {live ? `${((live.upAsk - live.upBid) * 100).toFixed(1)}¢` : "—"} · DOWN {live ? `${((live.downAsk - live.downBid) * 100).toFixed(1)}¢` : "—"}</small></p><strong>{model.selectedSpread <= MAX_ENTRY_SPREAD ? "PASS" : "BLOCK"}</strong></div>
               <div><span className="health-icon">◷</span><p><b>Chainlink freshness</b><small>{dataAge < Infinity ? `${Math.round(dataAge)}ms old · 3,000ms limit` : "Connecting"}</small></p><strong>{dataAge <= MAX_DATA_AGE_MS ? "LIVE" : "BLOCK"}</strong></div>
-              <div><span className="health-icon">⌁</span><p><b>Executable depth</b><small>{depth ? `${depth.toFixed(1)} shares at the thinner top ask` : "No top-of-book depth"}</small></p><strong>{depth >= 5 ? "PASS" : "BLOCK"}</strong></div>
+              <div><span className="health-icon">⌁</span><p><b>Favorite-side depth</b><small>{model.selectedDepth ? `${model.selectedDepth.toFixed(1)} shares at the top ask` : "No top-of-book depth"}</small></p><strong>{model.selectedDepth >= MIN_ENTRY_DEPTH ? "PASS" : "BLOCK"}</strong></div>
             </div>
             <details>
               <summary>View calculation details <span>⌄</span></summary>
-              <div className="formula"><code>z = ln(S/K) ÷ √(q × T)</code><p>z-score <b>{model.z.toFixed(3)}</b> · raw probability <b>{pct(model.raw)}</b></p><p>50% Chainlink fair model + 50% Polymarket midpoint</p><p>Momentum 15/30/60s: <b>{momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</b></p><p>Choppiness 60s: <b>{choppiness60.toFixed(2)}</b> · volatility: <b>{model.volatilityRegime}</b></p><p>Required edge: <b>{(model.requiredEdge * 100).toFixed(1)}¢</b>{model.adaptiveEligible ? " adaptive tier" : " normal tier"}</p><p>Entry price floor: <b>10.0¢</b> · selected ask <b>{(model.selectedAsk * 100).toFixed(1)}¢</b></p><p>Recovery: <b>{recoveringBetId != null ? "EXITING" : recoveryCandidate ? `TRIGGERED · score ${recoveryCandidate.score}` : "MONITORING"}</b></p></div>
+              <div className="formula"><code>Direction = Polymarket&apos;s midpoint favorite</code><p>Market leader: <b>{model.side}</b> at <b>{pct(model.marketConfidence)}</b> consensus</p><p>Chainlink model: <b>{model.modelSide}</b> · z-score <b>{model.z.toFixed(3)}</b> · raw UP <b>{pct(model.raw)}</b></p><p>Entry requires market, strike, Chainlink, and momentum to agree.</p><p>Momentum 15/30/60s: <b>{momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</b></p><p>Choppiness: <b>{choppiness60.toFixed(2)} / 0.55 max</b> · volatility: <b>{model.volatilityRegime}</b></p><p>Favorite price range: <b>55–90¢</b> · selected ask <b>{(model.selectedAsk * 100).toFixed(1)}¢</b></p><p>Entry window: <b>60–210 seconds</b> · history collected <b>{Math.floor(historySpanMs / 1_000)}s</b></p><p>Position limit: <b>one per five-minute game</b></p><p>Recovery: <b>{recoveringBetId != null ? "EXITING" : recoveryCandidate ? `TRIGGERED · score ${recoveryCandidate.score}` : "MONITORING"}</b></p></div>
             </details>
           </section>
         </div>

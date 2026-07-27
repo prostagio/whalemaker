@@ -81,6 +81,10 @@ export async function ensurePaperDatabase() {
       signal TEXT NOT NULL,
       blocked_reason TEXT
     )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS paper_market_locks (
+      market_slug TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL
+    )`),
     d1.prepare("CREATE INDEX IF NOT EXISTS paper_bets_status_end_idx ON paper_bets (status, market_end_ms)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS paper_bets_placed_idx ON paper_bets (placed_at)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS model_snapshots_market_time_idx ON model_snapshots (market_slug, captured_at)"),
@@ -101,6 +105,8 @@ export async function ensurePaperDatabase() {
   await d1.prepare(`UPDATE paper_bets
     SET shares = stake / entry_price
     WHERE shares IS NULL AND entry_price > 0`).run();
+  await d1.prepare(`INSERT OR IGNORE INTO paper_market_locks (market_slug, created_at)
+    SELECT market_slug, MIN(placed_at) FROM paper_bets GROUP BY market_slug`).run();
 }
 
 export async function settleExpiredBetsForTesting() {
@@ -275,7 +281,18 @@ export async function placeStoredBet(input: {
   const d1 = db();
   await reconcilePaperBalance();
   if (input.shares !== 5) throw new Error("Paper orders must contain exactly 5 shares.");
-  if (input.entryPrice < 0.10) throw new Error("Paper orders below 10¢ per share are blocked.");
+  if (!input.marketSlug || input.marketSlug.length > 180) {
+    throw new Error("Invalid Polymarket market identifier.");
+  }
+  if (!Number.isFinite(input.marketEndMs) || input.marketEndMs <= Date.now()) {
+    throw new Error("The Polymarket market is no longer open.");
+  }
+  if (!Number.isFinite(input.fairProbability) || input.fairProbability < 0.55 || input.fairProbability > 1) {
+    throw new Error("Polymarket consensus must be at least 55%.");
+  }
+  if (input.entryPrice < 0.55 || input.entryPrice > 0.90) {
+    throw new Error("Consensus entries must cost between 55¢ and 90¢ per share.");
+  }
   const stake = input.shares * input.entryPrice;
   const account = await d1
     .prepare("SELECT balance FROM paper_accounts WHERE id = 1")
@@ -283,27 +300,41 @@ export async function placeStoredBet(input: {
   if (!account || account.balance < stake) throw new Error("Insufficient paper balance.");
   if (input.entryPrice <= 0 || input.entryPrice > 1) throw new Error("Invalid entry price.");
   const now = Date.now();
-  await d1.batch([
-    d1.prepare("UPDATE paper_accounts SET balance = balance - ?1, updated_at = ?2 WHERE id = 1")
-      .bind(stake, now),
-    d1.prepare(`INSERT INTO paper_bets
-      (condition_id, market_slug, market_title, market_end_ms, side, stake, shares,
-       entry_price, fair_probability, edge, status, placed_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'OPEN', ?11)`)
-      .bind(
-        input.conditionId,
-        input.marketSlug,
-        input.marketTitle,
-        input.marketEndMs,
-        input.side,
-        stake,
-        input.shares,
-        input.entryPrice,
-        input.fairProbability,
-        input.edge,
-        now
-      ),
-  ]);
+  const lock = await d1.prepare(`INSERT OR IGNORE INTO paper_market_locks
+    (market_slug, created_at) VALUES (?1, ?2)`)
+    .bind(input.marketSlug, now)
+    .run();
+  if ((lock.meta.changes ?? 0) !== 1) {
+    throw new Error("This market has already been traded; averaging down is disabled.");
+  }
+  try {
+    await d1.batch([
+      d1.prepare("UPDATE paper_accounts SET balance = balance - ?1, updated_at = ?2 WHERE id = 1")
+        .bind(stake, now),
+      d1.prepare(`INSERT INTO paper_bets
+        (condition_id, market_slug, market_title, market_end_ms, side, stake, shares,
+         entry_price, fair_probability, edge, status, placed_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'OPEN', ?11)`)
+        .bind(
+          input.conditionId,
+          input.marketSlug,
+          input.marketTitle,
+          input.marketEndMs,
+          input.side,
+          stake,
+          input.shares,
+          input.entryPrice,
+          input.fairProbability,
+          input.edge,
+          now
+        ),
+    ]);
+  } catch (error) {
+    await d1.prepare("DELETE FROM paper_market_locks WHERE market_slug = ?1")
+      .bind(input.marketSlug)
+      .run();
+    throw error;
+  }
 }
 
 export async function storeModelSnapshot(input: Record<string, unknown>) {
@@ -347,6 +378,7 @@ export async function resetPaperLedger() {
   const d1 = db();
   await d1.batch([
     d1.prepare("DELETE FROM paper_bets"),
+    d1.prepare("DELETE FROM paper_market_locks"),
     d1.prepare("DELETE FROM model_snapshots"),
     d1.prepare("UPDATE paper_accounts SET balance = 100, updated_at = ?1 WHERE id = 1")
       .bind(Date.now()),

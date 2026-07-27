@@ -1,26 +1,54 @@
-# WhaleMaker starting calibration
+# WhaleMaker market-consensus calibration
 
-This release is deliberately **paper trading only**. It reads the active
-Polymarket BTC five-minute market and its Chainlink BTC/USD reference feed, but
-does not connect to a wallet or submit orders.
+This release is **paper trading only**. It reads the active Polymarket BTC
+five-minute market and its Chainlink BTC/USD reference feed, but it does not
+connect to a wallet or submit real orders.
 
 ## Bankroll and execution
 
 - Starting bankroll: **$100**
-- Fixed order size: **5 shares per signal**
+- Fixed order size: **5 shares**
 - Entry cost: **5 × the selected outcome's ask price**
-- Maximum bet frequency: **one every 20 seconds**
-- No bet when the available balance is below the calculated five-share cost
-- Normal required net edge: **2 cents**
-- Adaptive required net edge: **0.5 cents** only in low/medium volatility,
-  when the Chainlink model leads the same-side Polymarket probability by at
-  least 0.25 percentage points and total disagreement is no more than 6 points
-- At least one outcome must have an executable price of **80 cents**
-- The current Chainlink tick must be no more than **1,000 ms** old
-- The Polymarket spread must be no more than **4 cents**
-- Both outcome asks must expose at least **5 shares** of top-level depth
+- Maximum exposure: **one position per Polymarket five-minute market**
+- No averaging down, repeat entry, or opposite-side entry in the same market
+- No order when the available balance is below the five-share cost
 
-## Fair-price model
+## Direction: the market leads
+
+The engine no longer chooses a side because its own fair-value calculation says
+that a cheap contract is undervalued. It first reads the midpoint probabilities
+implied by the live Polymarket order books:
+
+`UP midpoint = (UP bid + UP ask) / 2`
+
+`DOWN midpoint = (DOWN bid + DOWN ask) / 2`
+
+The higher midpoint is the crowd favorite and is the only side the engine may
+buy. The favorite must have at least **55% market confidence**, and its
+executable ask must be between **55¢ and 90¢**.
+
+## Independent confirmation gates
+
+Polymarket consensus proposes the direction. Chainlink and market-quality
+signals can only confirm or veto it:
+
+- At least **60 seconds** of live Chainlink history
+- Entry only with **60–210 seconds** remaining
+- BTC must be on the same side of the strike as the Polymarket favorite
+- The raw Chainlink probability model must select the same side
+- 15-second and 30-second momentum must point the same way; 60-second momentum
+  must not materially oppose it
+- 60-second choppiness must be at most **0.55**
+- High-volatility regimes are blocked
+- Selected-side spread must be at most **2¢**
+- Selected-side top-of-book ask depth must be at least **20 shares**
+- Market data must be no more than **3 seconds** old
+- Polymarket must still be accepting orders
+
+If any gate fails, the engine waits. It never switches to the less popular side
+merely because that contract is cheaper.
+
+## Chainlink probability model
 
 For current BTC price `S`, strike `K`, and seconds to expiry `T`:
 
@@ -28,87 +56,51 @@ For current BTC price `S`, strike `K`, and seconds to expiry `T`:
 2. EWMA variance: `q_t = 0.97 q_(t-1) + 0.03 r_t²`
 3. Variance floor: `q_used = max(q_t, 2.3020308442843487e-9)`
 4. Standardized distance: `z = ln(S / K) / sqrt(q_used × T)`
-5. Raw UP fair probability: `p_raw = Φ(z)`
-6. Calibrated fair probability: `p_fair = 0.50 × p_raw + 0.50 × p_CLOB`
+5. Raw UP probability: `p_raw = Φ(z)`
+6. Research calibration: `p_calibrated = 0.50 × p_raw + 0.50 × p_CLOB`
 
-The 0.97 EWMA decay corresponds to the documented **22.7566-second half-life**.
+The calibrated probability and fee-aware model gaps are recorded for research,
+but they do **not** determine which side is purchased.
 
-## Entry score
-
-- UP edge: `p_fair - UP ask - 1¢ safety margin - 0.5¢ spread penalty`
-- DOWN edge: `(1 - p_fair) - DOWN ask - 1¢ safety margin - 0.5¢ spread penalty`
-- Pick the side with the larger positive edge.
-- Wait when the best net edge is below 2¢ or fewer than 15 seconds remain.
-
-## Initial market-quality gates
-
-- Maximum spread: **4¢**
-- Minimum depth: **5 shares at both top levels**
-- Maximum venue divergence: **10 bps**
-- Maximum exchange-data age: **1,000 ms**
-
-## Polymarket timing and settlement
+## Timing and test settlement
 
 - Market discovery uses the active `btc-updown-5m-{epoch}` Polymarket event.
-- Window start comes from Polymarket's `eventStartTime`.
-- The close countdown and stored settlement cutoff come from the market's
-  `endDate`; the app does not manufacture its own five-minute timer.
-- Testing settlement does not wait for Polymarket's official resolution. After
-  the cutoff, the app reads the completed Chainlink price window from
-  Polymarket and calculates the outcome itself.
+- The countdown and stored cutoff use Polymarket's market end time.
+- After the cutoff, test settlement reads the completed Chainlink price window
+  exposed by Polymarket and calculates the result without waiting for official
+  resolution.
 - `UP` wins when `closePrice >= openPrice`; otherwise `DOWN` wins.
 - A winning five-share position pays **$5**; a losing position pays zero.
-- The persistent balance is recalculated as starting balance plus settled P&L
-  minus stakes still held in open bets.
+- Balance equals starting balance plus realized P&L minus stakes still committed
+  to open positions.
 
 ## Recovery exits
 
-Recovery is a paper sell at the current Polymarket bid, not a larger opposite
-bet. An open position is eligible only after 10 seconds and only while the
-Chainlink feed is fresh, the spread is at most 4 cents, Polymarket is accepting
-orders, and top bid depth can cover every share being sold.
+Recovery is a paper sale of the existing position at the current best bid. It
+never adds shares or opens an opposite bet.
 
-The engine scores a possible reversal using:
+An open position is eligible after 10 seconds while data is fresh, the selected
+book is tradeable, and displayed bid depth covers all five shares. A loss of
+**30% of entry cost** triggers an emergency exit independently of the internal
+fair-price model, so the engine cannot keep holding merely because its own model
+still favors the original side. Other reversal evidence—strike crossing,
+adverse momentum, probability deterioration, time remaining, and choppiness—is
+used for earlier confirmed exits.
 
-- the model selecting the opposite side;
-- BTC crossing the strike against the position;
-- raw and calibrated fair value falling below the position;
-- adverse 15, 30, and 60-second momentum;
-- mark-to-market loss relative to a volatility-adjusted stop;
-- time remaining; and
-- a penalty for high 60-second choppiness.
+Recovery P&L is:
 
-The mark-to-market loss limits are 50% of entry cost in low volatility, 40% in
-medium volatility, and 30% in high volatility. A normal recovery requires a
-confirmed model flip, an adverse strike crossing, at least two adverse momentum
-windows, fair value below 45%, low choppiness, and a score of at least 6.
-Emergency and final-45-second defenses use the same live evidence with tighter
-loss or fair-value conditions.
+`5 × exit bid - 5 × entry ask`
 
-At exit, the engine assumes the full position sells at the displayed best bid:
+This remains a paper fill assumption. Real fees, latency, partial fills, queue
+movement, and adverse selection are not modeled as executable live trading.
 
-`shares = 5`
+## Recorded research data
 
-`recovery proceeds = shares * exit_bid`
+A database snapshot is saved every five seconds with BTC and strike prices,
+time remaining, variance, raw and calibrated probabilities, both order books,
+spread, depth, data age, 15/30/60-second momentum, choppiness, volatility
+regime, current signal, and every blocking reason. Results remain downloadable
+as CSV.
 
-`entry cost = shares * entry_price`
-
-`recovery P&L = recovery proceeds - entry cost`
-
-Recovery never increases the position and cannot fire without enough displayed bid
-depth. This is still a paper fill assumption and does not include real taker
-fees, latency, partial fills, or queue movement.
-
-## Recorded research variables
-
-While the engine is running, a database snapshot is saved every five seconds.
-It contains the complete fair-price inputs and outputs, both CLOB books,
-spread, top-level depth, data age, 15/30/60-second Chainlink momentum,
-60-second choppiness, volatility regime, required edge tier, signal, and all
-blocking reasons.
-
-These are starting values from the workspace's strategy epoch 3 configuration,
-not evidence of future profitability. The live inputs now use Polymarket's
-active market, public CLOB, and settlement-matched Chainlink BTC/USD values.
-Before real-money use, the model still requires out-of-sample testing with
-fees, latency, slippage, fill probability, and adverse selection included.
+These thresholds are a conservative starting calibration, not evidence of
+future profitability. Real-money use still requires out-of-sample testing.

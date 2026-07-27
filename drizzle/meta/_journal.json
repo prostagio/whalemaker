@@ -15,6 +15,13 @@
       "when": 1785167126671,
       "tag": "0001_left_inhumans",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785178255028,
+      "tag": "0002_condemned_centennial",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,12 @@ market close time, side, five-share quantity, dollar entry cost, entry price,
 fair probability, edge, settlement status, winning outcome or recovery reason,
 payout, PnL, and timestamps.
 
+### `paper_market_locks`
+
+One durable row per Polymarket market that has been traded. The market slug is
+the primary key, so concurrent browser tabs cannot create a second position in
+the same five-minute game. Resetting the paper ledger clears these locks.
+
 ### `model_snapshots`
 
 A research observation every five seconds while the engine runs. These rows
