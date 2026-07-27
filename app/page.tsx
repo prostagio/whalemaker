@@ -57,6 +57,7 @@ type LiveMarket = {
 
 const VARIANCE_FLOOR = 2.3020308442843487e-9;
 const FIXED_SHARES = 5;
+const MAX_DATA_AGE_MS = 3_000;
 const normalCdf = (x: number) => {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
   const d = 0.3989423 * Math.exp((-x * x) / 2);
@@ -114,7 +115,9 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    let poller: number | undefined;
     const load = async () => {
+      let nextPollMs = 1_500;
       try {
         const response = await fetch("/api/polymarket", { cache: "no-store" });
         const payload = await response.json();
@@ -124,15 +127,17 @@ export default function Home() {
           setDataError("");
         }
       } catch (error) {
+        nextPollMs = 5_000;
         if (active) setDataError(error instanceof Error ? error.message : "Live market data failed.");
+      } finally {
+        if (active) poller = window.setTimeout(load, nextPollMs);
       }
     };
     load();
-    const poller = window.setInterval(load, 1_000);
     const ticker = window.setInterval(() => setClock(Date.now()), 250);
     return () => {
       active = false;
-      window.clearInterval(poller);
+      if (poller) window.clearTimeout(poller);
       window.clearInterval(ticker);
     };
   }, []);
@@ -265,7 +270,7 @@ export default function Home() {
       volatilityRegime !== "HIGH" && sameSideLead >= 0.0025 && disagreement <= 0.06;
     const requiredEdge = adaptiveEligible ? 0.005 : 0.02;
     const dominantPrice = Math.max(upAsk, downAsk);
-    const qualityPass = Boolean(live?.acceptingOrders) && spread <= 0.04 && depth >= 5 && dataAge <= 1_000;
+    const qualityPass = Boolean(live?.acceptingOrders) && spread <= 0.04 && depth >= 5 && dataAge <= MAX_DATA_AGE_MS;
     const blockedReasons = [
       !live ? "no active Polymarket market" : "",
       !chainlink || feedStatus !== "live" ? "Chainlink feed offline" : "",
@@ -277,7 +282,7 @@ export default function Home() {
       bankroll < orderCost ? `balance below ${money(orderCost)} order cost` : "",
       spread > 0.04 ? "spread above 4¢" : "",
       depth < 5 ? "top depth below 5 shares" : "",
-      dataAge > 1_000 ? "Chainlink data older than 1,000ms" : "",
+      dataAge > MAX_DATA_AGE_MS ? "Chainlink data older than 3,000ms" : "",
       !live?.acceptingOrders ? "Polymarket is not accepting orders" : "",
     ].filter(Boolean);
     const blocked = blockedReasons.length > 0;
@@ -323,7 +328,7 @@ export default function Home() {
   };
 
   const recoveryCandidate = useMemo(() => {
-    if (!live || !chainlink || dataAge > 1_000 || spread > 0.04 || seconds <= 3) return null;
+    if (!live || !chainlink || dataAge > MAX_DATA_AGE_MS || spread > 0.04 || seconds <= 3) return null;
     const candidates = bets
       .filter((bet) =>
         bet.status === "OPEN" &&
@@ -458,8 +463,8 @@ export default function Home() {
 
   const confidence = Math.min(99, Math.round(Math.abs(model.calibrated - 0.5) * 120 + 42));
   const signalLabel = model.blocked ? "WAIT" : `BET ${model.side}`;
-  const freshness = dataAge <= 1_000 ? "LIVE" : dataAge < Infinity ? "STALE" : feedStatus.toUpperCase();
-  const qualityCount = [spread <= 0.04, depth >= 5, dataAge <= 1_000, Boolean(live?.acceptingOrders)].filter(Boolean).length;
+  const freshness = dataAge <= MAX_DATA_AGE_MS ? "LIVE" : dataAge < Infinity ? "STALE" : feedStatus.toUpperCase();
+  const qualityCount = [spread <= 0.04, depth >= 5, dataAge <= MAX_DATA_AGE_MS, Boolean(live?.acceptingOrders)].filter(Boolean).length;
   const settledBalance = startingBalance + stats.realized_pnl;
   const transactions = bets.flatMap<ShareTransaction>((bet) => {
     const shares = bet.shares ?? bet.stake / bet.entry_price;
@@ -673,7 +678,7 @@ export default function Home() {
             <div className="health-list">
               <div><span className="health-icon">↕</span><p><b>Distance from strike</b><small>{live ? `${model.distance >= 0 ? "Above" : "Below"} by ${Math.abs(model.distance * 10000).toFixed(2)} bps` : "Waiting for Chainlink"}</small></p><strong>{live ? model.distance >= 0 ? "UP" : "DOWN" : "WAIT"}</strong></div>
               <div><span className="health-icon">≈</span><p><b>Polymarket spread</b><small>UP {live ? `${((live.upAsk - live.upBid) * 100).toFixed(1)}¢` : "—"} · DOWN {live ? `${((live.downAsk - live.downBid) * 100).toFixed(1)}¢` : "—"}</small></p><strong>{spread <= 0.04 ? "PASS" : "BLOCK"}</strong></div>
-              <div><span className="health-icon">◷</span><p><b>Chainlink freshness</b><small>{dataAge < Infinity ? `${Math.round(dataAge)}ms old` : "Connecting"}</small></p><strong>{dataAge <= 1_000 ? "LIVE" : "BLOCK"}</strong></div>
+              <div><span className="health-icon">◷</span><p><b>Chainlink freshness</b><small>{dataAge < Infinity ? `${Math.round(dataAge)}ms old · 3,000ms limit` : "Connecting"}</small></p><strong>{dataAge <= MAX_DATA_AGE_MS ? "LIVE" : "BLOCK"}</strong></div>
               <div><span className="health-icon">⌁</span><p><b>Executable depth</b><small>{depth ? `${depth.toFixed(1)} shares at the thinner top ask` : "No top-of-book depth"}</small></p><strong>{depth >= 5 ? "PASS" : "BLOCK"}</strong></div>
             </div>
             <details>

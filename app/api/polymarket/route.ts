@@ -1,5 +1,6 @@
 type PriceLevel = { price: string; size: string };
 type Book = {
+  asset_id?: string;
   bids?: PriceLevel[];
   asks?: PriceLevel[];
   timestamp?: string;
@@ -26,10 +27,24 @@ type GammaEvent = {
   markets: GammaMarket[];
 };
 
-const json = (url: string) =>
+type CachedMarket = {
+  slug: string;
+  event: GammaEvent;
+  market: GammaMarket;
+  tokenIds: string[];
+  upIndex: number;
+  downIndex: number;
+  strike: number;
+  expiresAt: number;
+};
+
+let cachedMarket: CachedMarket | null = null;
+
+const json = (url: string, init?: RequestInit) =>
   fetch(url, {
+    ...init,
     cache: "no-store",
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", ...init?.headers },
   }).then(async (response) => {
     if (!response.ok) {
       throw new Error(`Polymarket returned HTTP ${response.status}`);
@@ -56,51 +71,73 @@ export async function GET() {
     const now = Date.now();
     const derivedWindowStart = Math.floor(now / 300_000) * 300;
     const slug = `btc-updown-5m-${derivedWindowStart}`;
-    const events = (await json(
-      `https://gamma-api.polymarket.com/events?slug=${slug}`
-    )) as GammaEvent[];
-    const event = events[0];
-    const market = event?.markets?.[0];
+    if (!cachedMarket || cachedMarket.slug !== slug || cachedMarket.expiresAt <= now) {
+      const events = (await json(
+        `https://gamma-api.polymarket.com/events?slug=${slug}`
+      )) as GammaEvent[];
+      const event = events[0];
+      const market = event?.markets?.[0];
 
-    if (!event || !market) {
-      return Response.json(
-        { error: "The current Polymarket BTC five-minute market is not available yet." },
-        { status: 503, headers: { "Cache-Control": "no-store" } }
+      if (!event || !market) {
+        return Response.json(
+          { error: "The current Polymarket BTC five-minute market is not available yet." },
+          { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "3" } }
+        );
+      }
+
+      const tokenIds = JSON.parse(market.clobTokenIds) as string[];
+      const outcomes = JSON.parse(market.outcomes) as string[];
+      const upIndex = outcomes.findIndex((outcome) => outcome.toLowerCase() === "up");
+      const downIndex = outcomes.findIndex((outcome) => outcome.toLowerCase() === "down");
+
+      if (upIndex < 0 || downIndex < 0 || !tokenIds[upIndex] || !tokenIds[downIndex]) {
+        throw new Error("Polymarket returned an unexpected outcome mapping.");
+      }
+
+      const cryptoUrl = new URL("https://polymarket.com/api/crypto/crypto-price");
+      cryptoUrl.searchParams.set("symbol", "BTC");
+      cryptoUrl.searchParams.set(
+        "eventStartTime",
+        market.eventStartTime || new Date(derivedWindowStart * 1_000).toISOString()
       );
+      cryptoUrl.searchParams.set("variant", "fiveminute");
+      const crypto = (await json(cryptoUrl.toString())) as {
+        openPrice?: number;
+        closePrice?: number;
+        timestamp?: number;
+      };
+      const strike = number(crypto.openPrice);
+      if (!strike) {
+        throw new Error("Polymarket has not published the Chainlink opening price for this window.");
+      }
+      cachedMarket = {
+        slug,
+        event,
+        market,
+        tokenIds,
+        upIndex,
+        downIndex,
+        strike,
+        expiresAt: (derivedWindowStart + 300) * 1_000,
+      };
     }
 
-    const tokenIds = JSON.parse(market.clobTokenIds) as string[];
-    const outcomes = JSON.parse(market.outcomes) as string[];
-    const upIndex = outcomes.findIndex((outcome) => outcome.toLowerCase() === "up");
-    const downIndex = outcomes.findIndex((outcome) => outcome.toLowerCase() === "down");
-
-    if (upIndex < 0 || downIndex < 0 || !tokenIds[upIndex] || !tokenIds[downIndex]) {
-      throw new Error("Polymarket returned an unexpected outcome mapping.");
-    }
-
-    const cryptoUrl = new URL("https://polymarket.com/api/crypto/crypto-price");
-    cryptoUrl.searchParams.set("symbol", "BTC");
-    cryptoUrl.searchParams.set(
-      "eventStartTime",
-      market.eventStartTime || new Date(derivedWindowStart * 1_000).toISOString()
-    );
-    cryptoUrl.searchParams.set("variant", "fiveminute");
-
-    const [upBook, downBook, crypto] = (await Promise.all([
-      json(`https://clob.polymarket.com/book?token_id=${tokenIds[upIndex]}`),
-      json(`https://clob.polymarket.com/book?token_id=${tokenIds[downIndex]}`),
-      json(cryptoUrl.toString()),
-    ])) as [Book, Book, { openPrice?: number; closePrice?: number; timestamp?: number }];
+    const { event, market, tokenIds, upIndex, downIndex, strike } = cachedMarket;
+    const books = (await json("https://clob.polymarket.com/books", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([
+        { token_id: tokenIds[upIndex] },
+        { token_id: tokenIds[downIndex] },
+      ]),
+    })) as Book[];
+    const upBook = books.find((book) => book.asset_id === tokenIds[upIndex]) ?? books[0] ?? {};
+    const downBook = books.find((book) => book.asset_id === tokenIds[downIndex]) ?? books[1] ?? {};
 
     const upAsk = bestAsk(upBook);
     const upBid = bestBid(upBook);
     const downAsk = bestAsk(downBook);
     const downBid = bestBid(downBook);
-    const strike = number(crypto.openPrice);
-
-    if (!strike) {
-      throw new Error("Polymarket has not published the Chainlink opening price for this window.");
-    }
 
     return Response.json(
       {
@@ -134,9 +171,17 @@ export async function GET() {
       { headers: { "Cache-Control": "no-store, max-age=0" } }
     );
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Live market data failed.";
+    const rateLimited = message.includes("HTTP 429");
     return Response.json(
-      { error: error instanceof Error ? error.message : "Live market data failed." },
-      { status: 502, headers: { "Cache-Control": "no-store" } }
+      { error: message },
+      {
+        status: rateLimited ? 429 : 502,
+        headers: {
+          "Cache-Control": "no-store",
+          ...(rateLimited ? { "Retry-After": "5" } : {}),
+        },
+      }
     );
   }
 }
