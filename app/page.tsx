@@ -22,12 +22,14 @@ type Bet = {
 type TransactionFilter = "all" | "buy" | "sell";
 type ShareTransaction = {
   id: string;
+  positionId: number;
   action: "BUY" | "SELL";
   time: number;
   side: Side;
   shares: number;
   price: number;
   cashFlow: number;
+  pnl: number | null;
   description: string;
 };
 type LiveMarket = {
@@ -461,27 +463,31 @@ export default function Home() {
     const shares = bet.shares ?? bet.stake / bet.entry_price;
     const rows: ShareTransaction[] = [{
       id: `buy-${bet.id}`,
+      positionId: bet.id,
       action: "BUY",
       time: bet.placed_at,
       side: bet.side,
       shares,
       price: bet.entry_price,
       cashFlow: -bet.stake,
-      description: `Bought ${bet.side} shares`,
+      pnl: null,
+      description: `${shares.toFixed(2)} ${bet.side} shares`,
     }];
     if (bet.status !== "OPEN" && bet.status !== "VOID" && bet.settled_at != null) {
       const cashReceived = bet.payout ?? 0;
       rows.push({
         id: `sell-${bet.id}`,
+        positionId: bet.id,
         action: "SELL",
         time: bet.settled_at,
         side: bet.side,
         shares,
         price: shares > 0 ? cashReceived / shares : 0,
         cashFlow: cashReceived,
+        pnl: bet.pnl,
         description: bet.status === "EXITED"
-          ? `Sold ${bet.side} through recovery`
-          : `Sold ${bet.side} at market close`,
+          ? `${shares.toFixed(2)} ${bet.side} shares · recovery`
+          : `${shares.toFixed(2)} ${bet.side} shares · market close`,
       });
     }
     return rows;
@@ -632,7 +638,7 @@ export default function Home() {
 
         <section className="card ledger">
           <div className="card-head ledger-head">
-            <div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Share transactions</h2><p className="ledger-explainer">Every position starts with a BUY. When it closes, the money received appears as a SELL.</p></div>
+            <div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Share transactions</h2><p className="ledger-explainer">Match BUY and SELL using the position number. P&amp;L appears on the SELL row after that position closes.</p></div>
             <a className="csv-button" href="/api/paper?format=csv" download>↓ Download CSV</a>
           </div>
           <div className="transaction-summary">
@@ -640,6 +646,7 @@ export default function Home() {
             <div><span>Shares currently held</span><strong>{sharesHeld.toFixed(2)}</strong></div>
             <div><span>Paid for buys shown</span><strong className="negative">−{money(cashPaid)}</strong></div>
             <div><span>Received from sells shown</span><strong className="positive">+{money(cashReceived)}</strong></div>
+            <div><span>Total realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : "−"}{money(Math.abs(stats.realized_pnl))}</strong></div>
           </div>
           <div className="ledger-tabs" role="tablist" aria-label="Share transaction filters">
             <button type="button" role="tab" aria-selected={transactionFilter === "all"} className={transactionFilter === "all" ? "active" : ""} onClick={() => setTransactionFilter("all")}>All <b>{transactions.length}</b></button>
@@ -654,20 +661,21 @@ export default function Home() {
             </div>
           ) : (
             <div className="table">
-              <div className="tr transaction-row header"><span>Action</span><span>Time</span><span>Shares</span><span>Direction</span><span>Price / share</span><span>Money</span></div>
+              <div className="tr transaction-row header"><span>Action</span><span>Time</span><span>Position</span><span>Direction</span><span>Price / share</span><span>Cash paid / received</span><span>Profit / loss</span></div>
               {visibleTransactions.map((transaction) => (
                 <div className="tr transaction-row" key={transaction.id}>
                   <span className={`trade-action ${transaction.action.toLowerCase()}`}>{transaction.action}</span>
                   <span>{new Date(transaction.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
-                  <span><b>{transaction.shares.toFixed(2)}</b><small>{transaction.description}</small></span>
+                  <span><b>#{transaction.positionId}</b><small>{transaction.description}</small></span>
                   <b className={transaction.side === "UP" ? "positive" : "negative"}>{transaction.side}</b>
                   <span>{(transaction.price * 100).toFixed(1)}¢</span>
                   <strong className={transaction.action === "BUY" ? "negative" : "positive"}>{transaction.cashFlow >= 0 ? "+" : "−"}{money(Math.abs(transaction.cashFlow))}</strong>
+                  <strong className={transaction.pnl == null ? "pending-pnl" : transaction.pnl >= 0 ? "positive" : "negative"}>{transaction.pnl == null ? "—" : `${transaction.pnl >= 0 ? "+" : "−"}${money(Math.abs(transaction.pnl))}`}</strong>
                 </div>
               ))}
             </div>
           )}
-          <p className="csv-note">BUY means cash paid to acquire shares. SELL means cash received when shares were recovered or the market closed. The CSV keeps the complete underlying trade record. · {snapshotCount} model samples stored.</p>
+          <p className="csv-note">BUY shows what the shares cost. SELL shows what came back and the final P&amp;L versus the matching BUY. The CSV keeps the complete underlying trade record. · {snapshotCount} model samples stored.</p>
         </section>
         <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Immediate self-calculated test settlement</span></footer>
       </section>
