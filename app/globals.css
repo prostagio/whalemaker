@@ -93,6 +93,17 @@ summary { list-style:none; cursor:pointer; padding:13px 14px; font-size:11px; fo
 .transaction-summary span,.transaction-summary strong { display:block; }
 .transaction-summary span { color:var(--muted); font-size:10px; margin-bottom:5px; }
 .transaction-summary strong { font-size:17px; }
+.game-totals { margin-bottom:15px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+.game-totals-head { display:flex; align-items:flex-end; justify-content:space-between; gap:18px; padding:15px; background:#0c120f; }
+.game-totals-head .eyebrow { margin-bottom:5px; }
+.game-totals-head h3 { margin:0; font-size:15px; letter-spacing:-.2px; }
+.game-totals-head>span { color:var(--muted); font-size:9px; }
+.game-table { font-size:11px; }
+.game-row { display:grid; grid-template-columns:1.8fr repeat(3,1fr); gap:12px; align-items:center; padding:11px 15px; border-top:1px solid var(--line); }
+.game-row span,.game-row b,.game-row small { display:block; }
+.game-row small { color:var(--muted); font-size:9px; margin-top:3px; }
+.game-header { color:var(--muted); font-size:9px; background:#111914; }
+.game-empty { margin:0; padding:14px 15px; border-top:1px solid var(--line); color:var(--muted); font-size:10px; }
 .empty { text-align:center; padding:8px; color:var(--muted); }.empty>span { font-size:24px; }.empty b { display:block; color:var(--ink); font-size:12px; margin:7px 0 4px; }.empty p { margin:0; font-size:11px; }
 .table { font-size:11px; }.tr { display:grid; grid-template-columns:1.2fr .8fr repeat(4,1fr); padding:11px 8px; border-top:1px solid var(--line); align-items:center; }.tr.header { color:var(--muted); font-size:10px; }
 .transaction-row { grid-template-columns:.7fr .95fr 1.35fr .75fr .9fr 1.2fr 1fr; gap:10px; }
@@ -104,4 +115,4 @@ summary { list-style:none; cursor:pointer; padding:13px 14px; font-size:11px; fo
 .csv-note { color:var(--muted); font-size:10px; line-height:1.5; margin:14px 2px 0; }
 footer { display:flex; justify-content:space-between; padding:20px 3px 0; color:#8a958e; font-size:10px; }
 @media(max-width:850px){.metrics{grid-template-columns:1fr 1fr}.metrics article:nth-child(2){border-right:0}.grid{grid-template-columns:1fr}.transaction-summary{grid-template-columns:repeat(3,1fr)}.status-row{align-items:flex-start;flex-direction:column}.controls{width:100%}.controls button{flex:1}.fair{padding-left:0}.topbar{padding:0 18px}.source-pill{display:none}.paper-pill{margin-left:auto}.brand span{display:none}}
-@media(max-width:520px){.shell{padding:26px 14px}.market-prices{grid-template-columns:1fr}.outcome-price{padding:14px 16px}.outcome-price strong{font-size:25px}.metrics{grid-template-columns:1fr 1fr}.metrics article{padding:16px 14px}.metrics strong{font-size:18px}.card{padding:18px}.fair{gap:18px}.ring{width:122px;height:122px}.ring::after{width:96px;height:96px}.ring strong{font-size:23px}.comparison{grid-template-columns:1fr}.comparison div{border-right:0;border-bottom:1px solid var(--line)}.ledger-head{align-items:flex-start;gap:12px}.csv-button{white-space:nowrap}.transaction-summary{grid-template-columns:1fr 1fr}.transaction-summary strong{font-size:15px}.transaction-row{grid-template-columns:.75fr 1.2fr 1fr 1fr;gap:7px}.transaction-row>:nth-child(2),.transaction-row>:nth-child(4),.transaction-row>:nth-child(5){display:none}.transaction-row small{font-size:8px}footer{gap:14px}.brand strong{font-size:14px}}
+@media(max-width:520px){.shell{padding:26px 14px}.market-prices{grid-template-columns:1fr}.outcome-price{padding:14px 16px}.outcome-price strong{font-size:25px}.metrics{grid-template-columns:1fr 1fr}.metrics article{padding:16px 14px}.metrics strong{font-size:18px}.card{padding:18px}.fair{gap:18px}.ring{width:122px;height:122px}.ring::after{width:96px;height:96px}.ring strong{font-size:23px}.comparison{grid-template-columns:1fr}.comparison div{border-right:0;border-bottom:1px solid var(--line)}.ledger-head{align-items:flex-start;gap:12px}.csv-button{white-space:nowrap}.transaction-summary{grid-template-columns:1fr 1fr}.transaction-summary strong{font-size:15px}.game-totals-head{align-items:flex-start;flex-direction:column;gap:5px}.game-row{grid-template-columns:1fr 1fr 1fr}.game-row>:first-child{grid-column:1/-1}.transaction-row{grid-template-columns:.75fr 1.2fr 1fr 1fr;gap:7px}.transaction-row>:nth-child(2),.transaction-row>:nth-child(4),.transaction-row>:nth-child(5){display:none}.transaction-row small{font-size:8px}footer{gap:14px}.brand strong{font-size:14px}}

@@ -7,6 +7,8 @@ type Bet = {
   id: number;
   condition_id: string;
   market_slug: string;
+  market_title: string;
+  market_end_ms: number;
   side: Side;
   stake: number;
   shares: number | null;
@@ -506,6 +508,34 @@ export default function Home() {
   const cashReceived = transactions
     .filter((transaction) => transaction.action === "SELL")
     .reduce((sum, transaction) => sum + transaction.cashFlow, 0);
+  const gameTotals = Array.from(bets.reduce((games, bet) => {
+    const existing = games.get(bet.market_slug) ?? {
+      slug: bet.market_slug,
+      title: bet.market_title,
+      endTime: bet.market_end_ms,
+      totalBet: 0,
+      totalReturn: 0,
+      realizedPnl: 0,
+      positions: 0,
+      openPositions: 0,
+    };
+    existing.totalBet += bet.stake;
+    existing.totalReturn += bet.payout ?? 0;
+    existing.realizedPnl += bet.pnl ?? 0;
+    existing.positions += 1;
+    existing.openPositions += bet.status === "OPEN" ? 1 : 0;
+    games.set(bet.market_slug, existing);
+    return games;
+  }, new Map<string, {
+    slug: string;
+    title: string;
+    endTime: number;
+    totalBet: number;
+    totalReturn: number;
+    realizedPnl: number;
+    positions: number;
+    openPositions: number;
+  }>()).values()).sort((a, b) => b.endTime - a.endTime);
 
   const currentSnapshot = live && chainlink ? {
     action: "snapshot",
@@ -648,6 +678,27 @@ export default function Home() {
             <div><span>Received from sells shown</span><strong className="positive">+{money(cashReceived)}</strong></div>
             <div><span>Total realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : "−"}{money(Math.abs(stats.realized_pnl))}</strong></div>
           </div>
+          <section className="game-totals" aria-labelledby="game-totals-title">
+            <div className="game-totals-head">
+              <div><p className="eyebrow">PER 5-MINUTE MARKET</p><h3 id="game-totals-title">Total bet and return per game</h3></div>
+              <span>Return is cash received, not profit.</span>
+            </div>
+            {gameTotals.length === 0 ? (
+              <p className="game-empty">Game totals will appear after the first purchase.</p>
+            ) : (
+              <div className="game-table">
+                <div className="game-row game-header"><span>Game</span><span>Total bet</span><span>Total return</span><span>Realized P&amp;L</span></div>
+                {gameTotals.map((game) => (
+                  <div className="game-row" key={game.slug}>
+                    <span><b>Ends {new Date(game.endTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</b><small>{game.positions} purchase{game.positions === 1 ? "" : "s"} · {game.openPositions ? `${game.openPositions} still open` : "complete"}</small></span>
+                    <strong className="negative">{money(game.totalBet)}</strong>
+                    <span><strong className="positive">{money(game.totalReturn)}</strong><small>{game.openPositions ? "return so far" : "final return"}</small></span>
+                    <strong className={game.realizedPnl >= 0 ? "positive" : "negative"}>{game.realizedPnl >= 0 ? "+" : "−"}{money(Math.abs(game.realizedPnl))}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
           <div className="ledger-tabs" role="tablist" aria-label="Share transaction filters">
             <button type="button" role="tab" aria-selected={transactionFilter === "all"} className={transactionFilter === "all" ? "active" : ""} onClick={() => setTransactionFilter("all")}>All <b>{transactions.length}</b></button>
             <button type="button" role="tab" aria-selected={transactionFilter === "buy"} className={transactionFilter === "buy" ? "active" : ""} onClick={() => setTransactionFilter("buy")}>Buys <b>{buyCount}</b></button>
