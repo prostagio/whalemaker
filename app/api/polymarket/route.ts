@@ -6,6 +6,7 @@ type Book = {
 };
 
 type GammaMarket = {
+  conditionId: string;
   question: string;
   slug: string;
   outcomes: string;
@@ -53,8 +54,8 @@ const sizeAt = (levels: PriceLevel[] | undefined, price: number) =>
 export async function GET() {
   try {
     const now = Date.now();
-    const windowStart = Math.floor(now / 300_000) * 300;
-    const slug = `btc-updown-5m-${windowStart}`;
+    const derivedWindowStart = Math.floor(now / 300_000) * 300;
+    const slug = `btc-updown-5m-${derivedWindowStart}`;
     const events = (await json(
       `https://gamma-api.polymarket.com/events?slug=${slug}`
     )) as GammaEvent[];
@@ -81,7 +82,7 @@ export async function GET() {
     cryptoUrl.searchParams.set("symbol", "BTC");
     cryptoUrl.searchParams.set(
       "eventStartTime",
-      market.eventStartTime || new Date(windowStart * 1_000).toISOString()
+      market.eventStartTime || new Date(derivedWindowStart * 1_000).toISOString()
     );
     cryptoUrl.searchParams.set("variant", "fiveminute");
 
@@ -106,10 +107,19 @@ export async function GET() {
         eventTitle: event.title,
         slug,
         marketUrl: `https://polymarket.com/event/${slug}`,
+        conditionId: market.conditionId,
         acceptingOrders: Boolean(market.acceptingOrders),
-        windowStart: windowStart * 1000,
-        windowEnd: (windowStart + 300) * 1000,
-        secondsLeft: Math.max(0, Math.ceil((windowStart + 300) - now / 1000)),
+        windowStart:
+          Date.parse(market.eventStartTime || "") || derivedWindowStart * 1_000,
+        windowEnd:
+          Date.parse(market.endDate || "") || (derivedWindowStart + 300) * 1_000,
+        secondsLeft: Math.max(
+          0,
+          Math.ceil(
+            ((Date.parse(market.endDate || "") || (derivedWindowStart + 300) * 1_000) - now) /
+              1_000
+          )
+        ),
         strike,
         upAsk: Number.isFinite(upAsk) ? upAsk : 1,
         upBid: Number.isFinite(upBid) ? upBid : 0,

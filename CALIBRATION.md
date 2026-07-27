@@ -10,7 +10,11 @@ does not connect to a wallet or submit orders.
 - Fixed stake: **$5 per signal**
 - Maximum bet frequency: **one every 20 seconds**
 - No bet when the available balance is below $5
-- A bet is allowed only when net model edge is at least **2 cents**
+- Normal required net edge: **2 cents**
+- Adaptive required net edge: **0.5 cents** only in low/medium volatility,
+  when the Chainlink model leads the same-side Polymarket probability by at
+  least 0.25 percentage points and total disagreement is no more than 6 points
+- At least one outcome must have an executable price of **80 cents**
 - The current Chainlink tick must be no more than **1,000 ms** old
 - The Polymarket spread must be no more than **4 cents**
 - Both outcome asks must expose at least **5 shares** of top-level depth
@@ -41,6 +45,25 @@ The 0.97 EWMA decay corresponds to the documented **22.7566-second half-life**.
 - Minimum depth: **5 shares at both top levels**
 - Maximum venue divergence: **10 bps**
 - Maximum exchange-data age: **1,000 ms**
+
+## Polymarket timing and settlement
+
+- Market discovery uses the active `btc-updown-5m-{epoch}` Polymarket event.
+- Window start comes from Polymarket's `eventStartTime`.
+- The close countdown and stored settlement cutoff come from the market's
+  `endDate`; the app does not manufacture its own five-minute timer.
+- After the cutoff, an open paper bet remains `OPEN` until Polymarket's CLOB
+  market record is closed and one outcome token is marked as the winner.
+- Winning payout is `stake / entry price`; losing payout is zero.
+- Payout is credited to the persistent paper balance only once.
+
+## Recorded research variables
+
+While the engine is running, a database snapshot is saved every five seconds.
+It contains the complete fair-price inputs and outputs, both CLOB books,
+spread, top-level depth, data age, 15/30/60-second Chainlink momentum,
+60-second choppiness, volatility regime, required edge tier, signal, and all
+blocking reasons.
 
 These are starting values from the workspace's strategy epoch 3 configuration,
 not evidence of future profitability. The live inputs now use Polymarket's

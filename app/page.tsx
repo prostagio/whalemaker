@@ -3,8 +3,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type Side = "UP" | "DOWN";
-type Bet = { id: number; side: Side; price: number; edge: number; result: "OPEN" };
+type Bet = {
+  id: number;
+  side: Side;
+  stake: number;
+  entry_price: number;
+  edge: number;
+  status: "OPEN" | "WON" | "LOST" | "VOID";
+  pnl: number | null;
+  placed_at: number;
+};
 type LiveMarket = {
+  conditionId: string;
   eventTitle: string;
   slug: string;
   marketUrl: string;
@@ -41,10 +51,40 @@ export default function Home() {
   const [variance, setVariance] = useState(VARIANCE_FLOOR);
   const [bankroll, setBankroll] = useState(100);
   const [bets, setBets] = useState<Bet[]>([]);
+  const [ledgerError, setLedgerError] = useState("");
+  const [placing, setPlacing] = useState(false);
+  const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, realized_pnl: 0 });
+  const [snapshotCount, setSnapshotCount] = useState(0);
   const [autoBet, setAutoBet] = useState(true);
   const [lastBetAt, setLastBetAt] = useState(0);
-  const [clock, setClock] = useState(Date.now());
+  const [clock, setClock] = useState(() => Date.now());
+  const [tickHistory, setTickHistory] = useState<{ price: number; timestamp: number }[]>([]);
   const previousTick = useRef<{ price: number; timestamp: number } | null>(null);
+  const lastSnapshotAt = useRef(0);
+
+  const applyLedger = (payload: {
+    account?: { balance?: number };
+    bets?: Bet[];
+    stats?: typeof stats;
+    snapshotCount?: number;
+  }) => {
+    if (typeof payload.account?.balance === "number") setBankroll(payload.account.balance);
+    if (payload.bets) setBets(payload.bets);
+    if (payload.stats) setStats(payload.stats);
+    if (typeof payload.snapshotCount === "number") setSnapshotCount(payload.snapshotCount);
+  };
+
+  const syncLedger = async () => {
+    try {
+      const response = await fetch("/api/paper", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Paper database failed.");
+      applyLedger(payload);
+      setLedgerError("");
+    } catch (error) {
+      setLedgerError(error instanceof Error ? error.message : "Paper database failed.");
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -72,6 +112,17 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const initial = window.setTimeout(syncLedger, 0);
+    const poller = window.setInterval(syncLedger, 5_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(poller);
+    };
+    // The ledger synchronizer has no external configuration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     let socket: WebSocket | null = null;
     let reconnect: number | undefined;
     let closed = false;
@@ -95,10 +146,15 @@ export default function Home() {
             payload?.symbol === "btc/usd" &&
             Number.isFinite(Number(payload.value))
           ) {
-            setChainlink({
+            const tick = {
               price: Number(payload.value),
               timestamp: Number(payload.timestamp) || Number(message.timestamp) || Date.now(),
-            });
+            };
+            setTickHistory((history) => [
+              ...history.filter((item) => item.timestamp >= tick.timestamp - 125_000),
+              tick,
+            ]);
+            setChainlink(tick);
             setFeedStatus("live");
           }
         } catch {
@@ -141,6 +197,24 @@ export default function Home() {
   const spread = live ? Math.max(live.upAsk - live.upBid, live.downAsk - live.downBid) : 1;
   const depth = live ? Math.min(live.upAskSize, live.downAskSize) : 0;
   const marketUp = live ? (live.upAsk + live.upBid) / 2 : 0.5;
+  const momentum = (lookbackSeconds: number) => {
+    const history = tickHistory;
+    const latest = history[history.length - 1];
+    if (!latest) return 0;
+    const target = latest.timestamp - lookbackSeconds * 1_000;
+    const previous = [...history].reverse().find((tick) => tick.timestamp <= target);
+    return previous ? Math.log(latest.price / previous.price) * 10_000 : 0;
+  };
+  const momentum15 = momentum(15);
+  const momentum30 = momentum(30);
+  const momentum60 = momentum(60);
+  const recentTicks = tickHistory.filter((tick) => tick.timestamp >= clock - 60_000);
+  const signs = recentTicks
+    .slice(1)
+    .map((tick, index) => Math.sign(tick.price - recentTicks[index].price))
+    .filter(Boolean);
+  const signFlips = signs.slice(1).filter((sign, index) => sign !== signs[index]).length;
+  const choppiness60 = signs.length > 1 ? signFlips / (signs.length - 1) : 0;
 
   const model = useMemo(() => {
     const qUsed = Math.max(variance, VARIANCE_FLOOR);
@@ -155,37 +229,149 @@ export default function Home() {
     const downEdge = 1 - calibrated - downAsk - 0.01 - spreadPenalty;
     const side: Side = upEdge >= downEdge ? "UP" : "DOWN";
     const bestEdge = Math.max(upEdge, downEdge);
+    const sigmaBpsPerSqrtSecond = Math.sqrt(qUsed) * 10_000;
+    const volatilityRegime =
+      sigmaBpsPerSqrtSecond < 0.5 ? "LOW" : sigmaBpsPerSqrtSecond < 1.25 ? "MEDIUM" : "HIGH";
+    const disagreement = Math.abs(raw - marketUp);
+    const sameSideLead = side === "UP" ? raw - marketUp : marketUp - raw;
+    const adaptiveEligible =
+      volatilityRegime !== "HIGH" && sameSideLead >= 0.0025 && disagreement <= 0.06;
+    const requiredEdge = adaptiveEligible ? 0.005 : 0.02;
+    const dominantPrice = Math.max(upAsk, downAsk);
     const qualityPass = Boolean(live?.acceptingOrders) && spread <= 0.04 && depth >= 5 && dataAge <= 1_000;
-    const blocked = !live || !chainlink || feedStatus !== "live" || Boolean(dataError) || seconds < 15 || bestEdge < 0.02 || bankroll < 5 || !qualityPass;
-    return { qUsed, distance, z, raw, calibrated, upAsk, downAsk, upEdge, downEdge, side, bestEdge, blocked, qualityPass };
-  }, [bankroll, btc, chainlink, dataAge, dataError, depth, feedStatus, live, marketUp, seconds, spread, strike, variance]);
+    const blockedReasons = [
+      !live ? "no active Polymarket market" : "",
+      !chainlink || feedStatus !== "live" ? "Chainlink feed offline" : "",
+      dataError ? "market API unavailable" : "",
+      ledgerError ? "paper database unavailable" : "",
+      seconds < 15 ? "less than 15 seconds remain" : "",
+      bestEdge < requiredEdge ? `edge below ${(requiredEdge * 100).toFixed(1)}¢` : "",
+      dominantPrice < 0.8 ? "no outcome is at least 80¢" : "",
+      bankroll < 5 ? "insufficient paper balance" : "",
+      spread > 0.04 ? "spread above 4¢" : "",
+      depth < 5 ? "top depth below 5 shares" : "",
+      dataAge > 1_000 ? "Chainlink data older than 1,000ms" : "",
+      !live?.acceptingOrders ? "Polymarket is not accepting orders" : "",
+    ].filter(Boolean);
+    const blocked = blockedReasons.length > 0;
+    return {
+      qUsed, distance, z, raw, calibrated, upAsk, downAsk, upEdge, downEdge,
+      side, bestEdge, blocked, qualityPass, blockedReasons, volatilityRegime,
+      requiredEdge, adaptiveEligible,
+    };
+  }, [bankroll, btc, chainlink, dataAge, dataError, depth, feedStatus, ledgerError, live, marketUp, seconds, spread, strike, variance]);
 
-  const placeBet = (side = model.side) => {
-    if (bankroll < 5 || model.blocked) return;
+  const placeBet = async (side = model.side) => {
+    if (bankroll < 5 || model.blocked || !live || placing) return;
     const edge = side === "UP" ? model.upEdge : model.downEdge;
     const price = side === "UP" ? model.upAsk : model.downAsk;
-    setBankroll((value) => value - 5);
-    setBets((value) => [{ id: Date.now(), side, price, edge, result: "OPEN" }, ...value].slice(0, 8));
     setLastBetAt(Date.now());
+    setPlacing(true);
+    try {
+      const response = await fetch("/api/paper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "place",
+          conditionId: live.conditionId,
+          marketSlug: live.slug,
+          marketTitle: live.eventTitle,
+          marketEndMs: live.windowEnd,
+          side,
+          stake: 5,
+          entryPrice: price,
+          fairProbability: side === "UP" ? model.calibrated : 1 - model.calibrated,
+          edge,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Paper bet failed.");
+      applyLedger(payload);
+      setLedgerError("");
+    } catch (error) {
+      setLedgerError(error instanceof Error ? error.message : "Paper bet failed.");
+    } finally {
+      setPlacing(false);
+    }
   };
 
   useEffect(() => {
-    if (running && autoBet && !model.blocked && Date.now() - lastBetAt > 20_000) placeBet();
+    if (!(running && autoBet && !model.blocked && !placing && Date.now() - lastBetAt > 20_000)) return;
+    const pending = window.setTimeout(() => placeBet(), 0);
+    return () => window.clearTimeout(pending);
     // The live model intentionally controls this effect cadence.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, autoBet, model.blocked, model.side]);
+  }, [running, autoBet, model.blocked, model.side, placing]);
 
-  const reset = () => {
-    setBankroll(100);
-    setBets([]);
+  const reset = async () => {
     setRunning(false);
     setLastBetAt(0);
+    try {
+      const response = await fetch("/api/paper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "reset" }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Reset failed.");
+      applyLedger(payload);
+      setLedgerError("");
+    } catch (error) {
+      setLedgerError(error instanceof Error ? error.message : "Reset failed.");
+    }
   };
 
   const confidence = Math.min(99, Math.round(Math.abs(model.calibrated - 0.5) * 120 + 42));
   const signalLabel = model.blocked ? "WAIT" : `BET ${model.side}`;
   const freshness = dataAge <= 1_000 ? "LIVE" : dataAge < Infinity ? "STALE" : feedStatus.toUpperCase();
   const qualityCount = [spread <= 0.04, depth >= 5, dataAge <= 1_000, Boolean(live?.acceptingOrders)].filter(Boolean).length;
+
+  const currentSnapshot = live && chainlink ? {
+    action: "snapshot",
+    marketSlug: live.slug,
+    btcPrice: btc,
+    strikePrice: strike,
+    secondsLeft: seconds,
+    variance,
+    rawProbability: model.raw,
+    calibratedProbability: model.calibrated,
+    upBid: live.upBid,
+    upAsk: live.upAsk,
+    downBid: live.downBid,
+    downAsk: live.downAsk,
+    spread,
+    topDepth: depth,
+    dataAgeMs: Math.round(dataAge),
+    momentum15Bps: momentum15,
+    momentum30Bps: momentum30,
+    momentum60Bps: momentum60,
+    choppiness60,
+    volatilityRegime: model.volatilityRegime,
+    requiredEdge: model.requiredEdge,
+    signal: model.blocked ? "WAIT" : `BET_${model.side}`,
+    blockedReason: model.blockedReasons.join("; "),
+  } : null;
+
+  useEffect(() => {
+    if (!running || !currentSnapshot || clock - lastSnapshotAt.current < 5_000) return;
+    lastSnapshotAt.current = clock;
+    const record = async () => {
+      try {
+        const response = await fetch("/api/paper", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(currentSnapshot),
+        });
+        if (response.ok) applyLedger(await response.json());
+      } catch {
+        // Snapshot recording retries after the five-second interval.
+      }
+    };
+    const pending = window.setTimeout(record, 0);
+    return () => window.clearTimeout(pending);
+    // The recorder intentionally samples the latest complete model.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clock, running]);
 
   return (
     <main>
@@ -196,12 +382,12 @@ export default function Home() {
       </header>
 
       <section className="shell">
-        {dataError && <div className="error-banner"><b>Live data paused.</b> {dataError} The engine will not bet until the feed recovers.</div>}
+        {(dataError || ledgerError) && <div className="error-banner"><b>Engine paused.</b> {dataError || ledgerError} No bet will be recorded until it recovers.</div>}
         <div className="status-row">
           <div>
             <p className="eyebrow">BTC UP OR DOWN · 5 MIN</p>
             <h1>Market command center</h1>
-            <p className="subtle">{live?.eventTitle ?? "Connecting to the active Polymarket window…"} · Settlement in <b>{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</b></p>
+            <p className="subtle">{live?.eventTitle ?? "Connecting to the active Polymarket window…"} · Polymarket close in <b>{Math.floor(seconds / 60)}:{String(seconds % 60).padStart(2, "0")}</b>{live ? ` · ${new Date(live.windowEnd).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}</p>
             {live && <a className="market-link" href={live.marketUrl} target="_blank" rel="noreferrer">View active market on Polymarket ↗</a>}
           </div>
           <div className="controls">
@@ -213,7 +399,7 @@ export default function Home() {
         </div>
 
         <section className="metrics">
-          <article><span>Available balance</span><strong>{money(bankroll)}</strong><small>Started with $100.00</small></article>
+          <article><span>Persistent balance</span><strong>{money(bankroll)}</strong><small>{money(stats.realized_pnl)} realized · {stats.open_count} open</small></article>
           <article><span>Fixed bet size</span><strong>$5.00</strong><small>{Math.floor(bankroll / 5)} bets remaining</small></article>
           <article><span>Chainlink BTC/USD</span><strong>{btc ? `$${btc.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</strong><small className={btc >= strike ? "positive" : "negative"}>{btc && strike ? `${btc >= strike ? "▲" : "▼"} ${Math.abs((btc / strike - 1) * 10000).toFixed(1)} bps vs $${strike.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "Waiting for Polymarket"}</small></article>
           <article><span>Engine state</span><strong className={running ? "positive" : ""}>{running ? "Watching" : "Paused"}</strong><small>{freshness} · {dataAge < Infinity ? `${Math.round(dataAge)}ms data age` : "No data yet"}</small></article>
@@ -234,7 +420,7 @@ export default function Home() {
               <div><span>Polymarket UP ask</span><b>{live ? pct(model.upAsk) : "—"}</b></div>
               <div><span>Net edge</span><b className={model.bestEdge >= 0.02 ? "positive" : ""}>{live ? `${(model.bestEdge * 100).toFixed(1)}¢` : "—"}</b></div>
             </div>
-            <button className="bet-button" disabled={!running || model.blocked || bankroll < 5} onClick={() => placeBet()}>Place $5 paper bet on {model.side}</button>
+            <button className="bet-button" disabled={!running || model.blocked || bankroll < 5 || placing} onClick={() => placeBet()}>{placing ? "Recording paper bet…" : `Place $5 paper bet on ${model.side}`}</button>
             <label className="toggle-row"><span><b>Auto-bet qualifying signals</b><small>Maximum one paper bet every 20 seconds</small></span><input type="checkbox" checked={autoBet} onChange={(event) => setAutoBet(event.target.checked)} /></label>
           </section>
 
@@ -248,15 +434,15 @@ export default function Home() {
             </div>
             <details>
               <summary>View calculation details <span>⌄</span></summary>
-              <div className="formula"><code>z = ln(S/K) ÷ √(q × T)</code><p>z-score <b>{model.z.toFixed(3)}</b> · raw probability <b>{pct(model.raw)}</b></p><p>50% Chainlink fair model + 50% Polymarket midpoint</p></div>
+              <div className="formula"><code>z = ln(S/K) ÷ √(q × T)</code><p>z-score <b>{model.z.toFixed(3)}</b> · raw probability <b>{pct(model.raw)}</b></p><p>50% Chainlink fair model + 50% Polymarket midpoint</p><p>Momentum 15/30/60s: <b>{momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</b></p><p>Choppiness 60s: <b>{choppiness60.toFixed(2)}</b> · volatility: <b>{model.volatilityRegime}</b></p><p>Required edge: <b>{(model.requiredEdge * 100).toFixed(1)}¢</b>{model.adaptiveEligible ? " adaptive tier" : " normal tier"}</p></div>
             </details>
           </section>
         </div>
 
         <section className="card ledger">
-          <div className="card-head"><div><p className="eyebrow">PAPER LEDGER</p><h2>Recent bets</h2></div><span className="subtle">{bets.length} simulated orders</span></div>
+          <div className="card-head"><div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Recent bets</h2></div><span className="subtle">{stats.wins}W · {stats.losses}L · {snapshotCount} model samples</span></div>
           {bets.length === 0 ? <div className="empty"><span>◎</span><b>No bets yet</b><p>Start the engine. It will wait until live Polymarket data produces a qualifying edge.</p></div> :
-            <div className="table"><div className="tr header"><span>Time</span><span>Side</span><span>Stake</span><span>Entry</span><span>Edge</span><span>Status</span></div>{bets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.id).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>$5.00</span><span>{pct(bet.price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className="open">OPEN</span></div>)}</div>}
+            <div className="table"><div className="tr header"><span>Time</span><span>Side</span><span>Stake</span><span>Entry</span><span>Edge</span><span>Status</span></div>{bets.map((bet) => <div className="tr" key={bet.id}><span>{new Date(bet.placed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span><b className={bet.side === "UP" ? "positive" : "negative"}>{bet.side}</b><span>{money(bet.stake)}</span><span>{pct(bet.entry_price)}</span><span>{(bet.edge * 100).toFixed(1)}¢</span><span className={bet.status === "WON" ? "positive" : bet.status === "LOST" ? "negative" : "open"}>{bet.status}{bet.pnl != null ? ` ${bet.pnl >= 0 ? "+" : ""}${money(bet.pnl)}` : ""}</span></div>)}</div>}
         </section>
         <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Chainlink BTC/USD settlement source</span></footer>
       </section>
