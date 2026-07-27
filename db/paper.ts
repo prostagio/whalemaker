@@ -275,6 +275,7 @@ export async function placeStoredBet(input: {
   const d1 = db();
   await reconcilePaperBalance();
   if (input.shares !== 5) throw new Error("Paper orders must contain exactly 5 shares.");
+  if (input.entryPrice < 0.10) throw new Error("Paper orders below 10¢ per share are blocked.");
   const stake = input.shares * input.entryPrice;
   const account = await d1
     .prepare("SELECT balance FROM paper_accounts WHERE id = 1")

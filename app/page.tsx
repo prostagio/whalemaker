@@ -57,6 +57,7 @@ type LiveMarket = {
 
 const VARIANCE_FLOOR = 2.3020308442843487e-9;
 const FIXED_SHARES = 5;
+const MIN_ENTRY_PRICE = 0.10;
 const MAX_DATA_AGE_MS = 3_000;
 const normalCdf = (x: number) => {
   const t = 1 / (1 + 0.2316419 * Math.abs(x));
@@ -260,7 +261,8 @@ export default function Home() {
     const downEdge = 1 - calibrated - downAsk - 0.01 - spreadPenalty;
     const side: Side = upEdge >= downEdge ? "UP" : "DOWN";
     const bestEdge = Math.max(upEdge, downEdge);
-    const orderCost = FIXED_SHARES * (side === "UP" ? upAsk : downAsk);
+    const selectedAsk = side === "UP" ? upAsk : downAsk;
+    const orderCost = FIXED_SHARES * selectedAsk;
     const sigmaBpsPerSqrtSecond = Math.sqrt(qUsed) * 10_000;
     const volatilityRegime =
       sigmaBpsPerSqrtSecond < 0.5 ? "LOW" : sigmaBpsPerSqrtSecond < 1.25 ? "MEDIUM" : "HIGH";
@@ -279,6 +281,7 @@ export default function Home() {
       seconds < 15 ? "less than 15 seconds remain" : "",
       bestEdge < requiredEdge ? `edge below ${(requiredEdge * 100).toFixed(1)}¢` : "",
       dominantPrice < 0.8 ? "no outcome is at least 80¢" : "",
+      selectedAsk < MIN_ENTRY_PRICE ? "selected share price is below the 10¢ minimum" : "",
       bankroll < orderCost ? `balance below ${money(orderCost)} order cost` : "",
       spread > 0.04 ? "spread above 4¢" : "",
       depth < 5 ? "top depth below 5 shares" : "",
@@ -289,7 +292,7 @@ export default function Home() {
     return {
       qUsed, distance, z, raw, calibrated, upAsk, downAsk, upEdge, downEdge,
       side, bestEdge, blocked, qualityPass, blockedReasons, volatilityRegime,
-      requiredEdge, adaptiveEligible, orderCost,
+      requiredEdge, adaptiveEligible, selectedAsk, orderCost,
     };
   }, [bankroll, btc, chainlink, dataAge, dataError, depth, feedStatus, ledgerError, live, marketUp, seconds, spread, strike, variance]);
 
@@ -683,7 +686,7 @@ export default function Home() {
             </div>
             <details>
               <summary>View calculation details <span>⌄</span></summary>
-              <div className="formula"><code>z = ln(S/K) ÷ √(q × T)</code><p>z-score <b>{model.z.toFixed(3)}</b> · raw probability <b>{pct(model.raw)}</b></p><p>50% Chainlink fair model + 50% Polymarket midpoint</p><p>Momentum 15/30/60s: <b>{momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</b></p><p>Choppiness 60s: <b>{choppiness60.toFixed(2)}</b> · volatility: <b>{model.volatilityRegime}</b></p><p>Required edge: <b>{(model.requiredEdge * 100).toFixed(1)}¢</b>{model.adaptiveEligible ? " adaptive tier" : " normal tier"}</p><p>Recovery: <b>{recoveringBetId != null ? "EXITING" : recoveryCandidate ? `TRIGGERED · score ${recoveryCandidate.score}` : "MONITORING"}</b></p></div>
+              <div className="formula"><code>z = ln(S/K) ÷ √(q × T)</code><p>z-score <b>{model.z.toFixed(3)}</b> · raw probability <b>{pct(model.raw)}</b></p><p>50% Chainlink fair model + 50% Polymarket midpoint</p><p>Momentum 15/30/60s: <b>{momentum15.toFixed(2)} / {momentum30.toFixed(2)} / {momentum60.toFixed(2)} bps</b></p><p>Choppiness 60s: <b>{choppiness60.toFixed(2)}</b> · volatility: <b>{model.volatilityRegime}</b></p><p>Required edge: <b>{(model.requiredEdge * 100).toFixed(1)}¢</b>{model.adaptiveEligible ? " adaptive tier" : " normal tier"}</p><p>Entry price floor: <b>10.0¢</b> · selected ask <b>{(model.selectedAsk * 100).toFixed(1)}¢</b></p><p>Recovery: <b>{recoveringBetId != null ? "EXITING" : recoveryCandidate ? `TRIGGERED · score ${recoveryCandidate.score}` : "MONITORING"}</b></p></div>
             </details>
           </section>
         </div>
