@@ -12,6 +12,8 @@ export type StoredBet = {
   entry_price: number;
   fair_probability: number;
   edge: number;
+  entry_mode: "VALUE" | "MOMENTUM";
+  entry_reason: string;
   status: "OPEN" | "WON" | "LOST" | "EXITED" | "VOID";
   settlement_outcome: string | null;
   payout: number | null;
@@ -48,6 +50,8 @@ export async function ensurePaperDatabase() {
       entry_price REAL NOT NULL,
       fair_probability REAL NOT NULL,
       edge REAL NOT NULL,
+      entry_mode TEXT NOT NULL DEFAULT 'VALUE',
+      entry_reason TEXT NOT NULL DEFAULT 'Legacy value entry',
       status TEXT NOT NULL DEFAULT 'OPEN',
       settlement_outcome TEXT,
       payout REAL,
@@ -75,8 +79,13 @@ export async function ensurePaperDatabase() {
       momentum_15_bps REAL NOT NULL DEFAULT 0,
       momentum_30_bps REAL NOT NULL DEFAULT 0,
       momentum_60_bps REAL NOT NULL DEFAULT 0,
+      up_contract_move_15 REAL NOT NULL DEFAULT 0,
+      down_contract_move_15 REAL NOT NULL DEFAULT 0,
+      up_contract_move_30 REAL NOT NULL DEFAULT 0,
+      down_contract_move_30 REAL NOT NULL DEFAULT 0,
       choppiness_60 REAL NOT NULL DEFAULT 0,
       volatility_regime TEXT NOT NULL DEFAULT 'UNKNOWN',
+      entry_mode TEXT NOT NULL DEFAULT 'WAIT',
       required_edge REAL NOT NULL DEFAULT 0.02,
       signal TEXT NOT NULL,
       blocked_reason TEXT
@@ -92,15 +101,34 @@ export async function ensurePaperDatabase() {
       (id, starting_balance, balance, fixed_stake, updated_at)
       VALUES (1, 100, 100, 5, ?1)`).bind(Date.now()),
   ]);
-  const [accountColumns, betColumns] = await Promise.all([
+  const [accountColumns, betColumns, snapshotColumns] = await Promise.all([
     d1.prepare("PRAGMA table_info(paper_accounts)").all<{ name: string }>(),
     d1.prepare("PRAGMA table_info(paper_bets)").all<{ name: string }>(),
+    d1.prepare("PRAGMA table_info(model_snapshots)").all<{ name: string }>(),
   ]);
   if (!accountColumns.results.some((column) => column.name === "fixed_shares")) {
     await d1.prepare("ALTER TABLE paper_accounts ADD COLUMN fixed_shares REAL NOT NULL DEFAULT 5").run();
   }
   if (!betColumns.results.some((column) => column.name === "shares")) {
     await d1.prepare("ALTER TABLE paper_bets ADD COLUMN shares REAL").run();
+  }
+  if (!betColumns.results.some((column) => column.name === "entry_mode")) {
+    await d1.prepare("ALTER TABLE paper_bets ADD COLUMN entry_mode TEXT NOT NULL DEFAULT 'VALUE'").run();
+  }
+  if (!betColumns.results.some((column) => column.name === "entry_reason")) {
+    await d1.prepare("ALTER TABLE paper_bets ADD COLUMN entry_reason TEXT NOT NULL DEFAULT 'Legacy value entry'").run();
+  }
+  const snapshotAdditions = [
+    ["up_contract_move_15", "REAL NOT NULL DEFAULT 0"],
+    ["down_contract_move_15", "REAL NOT NULL DEFAULT 0"],
+    ["up_contract_move_30", "REAL NOT NULL DEFAULT 0"],
+    ["down_contract_move_30", "REAL NOT NULL DEFAULT 0"],
+    ["entry_mode", "TEXT NOT NULL DEFAULT 'WAIT'"],
+  ] as const;
+  for (const [name, definition] of snapshotAdditions) {
+    if (!snapshotColumns.results.some((column) => column.name === name)) {
+      await d1.prepare(`ALTER TABLE model_snapshots ADD COLUMN ${name} ${definition}`).run();
+    }
   }
   await d1.prepare(`UPDATE paper_bets
     SET shares = stake / entry_price
@@ -277,6 +305,8 @@ export async function placeStoredBet(input: {
   entryPrice: number;
   fairProbability: number;
   edge: number;
+  entryMode: "VALUE" | "MOMENTUM";
+  entryReason: string;
 }) {
   const d1 = db();
   await reconcilePaperBalance();
@@ -287,11 +317,24 @@ export async function placeStoredBet(input: {
   if (!Number.isFinite(input.marketEndMs) || input.marketEndMs <= Date.now()) {
     throw new Error("The Polymarket market is no longer open.");
   }
-  if (!Number.isFinite(input.fairProbability) || input.fairProbability < 0.55 || input.fairProbability > 1) {
-    throw new Error("Polymarket consensus must be at least 55%.");
+  if (!Number.isFinite(input.fairProbability) || input.fairProbability > 1) {
+    throw new Error("Invalid Polymarket market support.");
   }
-  if (input.entryPrice < 0.55 || input.entryPrice > 0.90) {
-    throw new Error("Consensus entries must cost between 55¢ and 90¢ per share.");
+  if (!Number.isFinite(input.edge)) throw new Error("Invalid model edge.");
+  if (input.entryMode === "VALUE") {
+    if (input.fairProbability < 0.55) {
+      throw new Error("Value entries require at least 55% Polymarket support.");
+    }
+    if (input.entryPrice < 0.55 || input.entryPrice > 0.90) {
+      throw new Error("Value entries must cost between 55¢ and 90¢ per share.");
+    }
+  } else {
+    if (input.fairProbability < 0.45) {
+      throw new Error("Momentum entries require at least 45% Polymarket support.");
+    }
+    if (input.entryPrice < 0.45 || input.entryPrice > 0.85) {
+      throw new Error("Momentum entries must cost between 45¢ and 85¢ per share.");
+    }
   }
   const stake = input.shares * input.entryPrice;
   const account = await d1
@@ -300,6 +343,8 @@ export async function placeStoredBet(input: {
   if (!account || account.balance < stake) throw new Error("Insufficient paper balance.");
   if (input.entryPrice <= 0 || input.entryPrice > 1) throw new Error("Invalid entry price.");
   const now = Date.now();
+  const entryReason = input.entryReason.replace(/\s+/g, " ").trim().slice(0, 240);
+  if (!entryReason) throw new Error("The entry rationale is required.");
   const lock = await d1.prepare(`INSERT OR IGNORE INTO paper_market_locks
     (market_slug, created_at) VALUES (?1, ?2)`)
     .bind(input.marketSlug, now)
@@ -313,8 +358,8 @@ export async function placeStoredBet(input: {
         .bind(stake, now),
       d1.prepare(`INSERT INTO paper_bets
         (condition_id, market_slug, market_title, market_end_ms, side, stake, shares,
-         entry_price, fair_probability, edge, status, placed_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'OPEN', ?11)`)
+         entry_price, fair_probability, edge, entry_mode, entry_reason, status, placed_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'OPEN', ?13)`)
         .bind(
           input.conditionId,
           input.marketSlug,
@@ -326,6 +371,8 @@ export async function placeStoredBet(input: {
           input.entryPrice,
           input.fairProbability,
           input.edge,
+          input.entryMode,
+          entryReason,
           now
         ),
     ]);
@@ -343,9 +390,10 @@ export async function storeModelSnapshot(input: Record<string, unknown>) {
     (market_slug, captured_at, btc_price, strike_price, seconds_left, variance,
      raw_probability, calibrated_probability, up_bid, up_ask, down_bid, down_ask,
      spread, top_depth, data_age_ms, momentum_15_bps, momentum_30_bps,
-     momentum_60_bps, choppiness_60, volatility_regime, required_edge,
-     signal, blocked_reason)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)`)
+     momentum_60_bps, up_contract_move_15, down_contract_move_15,
+     up_contract_move_30, down_contract_move_30, choppiness_60,
+     volatility_regime, entry_mode, required_edge, signal, blocked_reason)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)`)
     .bind(
       input.marketSlug,
       Date.now(),
@@ -365,8 +413,13 @@ export async function storeModelSnapshot(input: Record<string, unknown>) {
       input.momentum15Bps,
       input.momentum30Bps,
       input.momentum60Bps,
+      input.upContractMove15,
+      input.downContractMove15,
+      input.upContractMove30,
+      input.downContractMove30,
       input.choppiness60,
       input.volatilityRegime,
+      input.entryMode,
       input.requiredEdge,
       input.signal,
       input.blockedReason || null

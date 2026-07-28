@@ -19,8 +19,9 @@ One persistent paper account with:
 
 Every simulated order with its Polymarket condition ID, market slug, exact
 market close time, side, five-share quantity, dollar entry cost, entry price,
-fair probability, edge, settlement status, winning outcome or recovery reason,
-payout, PnL, and timestamps.
+market support, model edge, entry mode, human-readable entry rationale,
+settlement status, winning outcome or recovery reason, payout, PnL, and
+timestamps.
 
 ### `paper_market_locks`
 

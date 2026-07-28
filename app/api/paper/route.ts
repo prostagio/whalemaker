@@ -20,12 +20,14 @@ const betsCsv = async () => {
   const bets = await readPaperBetsForExport();
   const headings = [
     "id", "market_slug", "market_title", "condition_id", "side", "stake_usd",
-    "shares", "entry_price", "fair_probability", "edge", "status", "settlement_outcome",
+    "shares", "entry_price", "market_support", "model_edge", "entry_mode", "entry_reason",
+    "status", "settlement_outcome",
     "payout_usd", "pnl_usd", "market_end_utc", "placed_at_utc", "settled_at_utc",
   ];
   const rows = bets.map((bet) => [
     bet.id, bet.market_slug, bet.market_title, bet.condition_id, bet.side, bet.stake,
-    bet.shares, bet.entry_price, bet.fair_probability, bet.edge, bet.status, bet.settlement_outcome,
+    bet.shares, bet.entry_price, bet.fair_probability, bet.edge, bet.entry_mode, bet.entry_reason,
+    bet.status, bet.settlement_outcome,
     bet.payout, bet.pnl, isoTime(bet.market_end_ms), isoTime(bet.placed_at),
     isoTime(bet.settled_at),
   ]);
@@ -86,6 +88,8 @@ export async function POST(request: Request) {
         entryPrice: Number(payload.entryPrice),
         fairProbability: Number(payload.fairProbability),
         edge: Number(payload.edge),
+        entryMode: payload.entryMode === "MOMENTUM" ? "MOMENTUM" : "VALUE",
+        entryReason: String(payload.entryReason || ""),
       });
     } else {
       return Response.json({ error: "Unknown paper-ledger action." }, { status: 400 });
