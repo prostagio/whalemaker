@@ -117,6 +117,29 @@ export async function readDirectionModel() {
   return toStoredModel(row);
 }
 
+const readDirectionSnapshots = async () => {
+  const result = await db().prepare(`SELECT
+      market_slug, captured_at, btc_price, strike_price, seconds_left, variance,
+      raw_probability, calibrated_probability, up_bid, up_ask, down_bid, down_ask,
+      spread, top_depth, data_age_ms, momentum_15_bps, momentum_30_bps,
+      momentum_60_bps, up_contract_move_15, down_contract_move_15,
+      up_contract_move_30, down_contract_move_30, choppiness_60
+    FROM model_snapshots
+    ORDER BY captured_at DESC
+    LIMIT ?1`).bind(MAX_SNAPSHOTS).all<DirectionSnapshot>();
+  return [...result.results].reverse();
+};
+
+export async function readDirectionTrainingDataset() {
+  const snapshots = await readDirectionSnapshots();
+  return {
+    featureNames: [...DIRECTION_FEATURE_NAMES],
+    horizonSeconds: 10,
+    snapshotCount: snapshots.length,
+    examples: buildDirectionExamples(snapshots),
+  };
+}
+
 export async function maybeTrainDirectionModel(force = false) {
   const d1 = db();
   const [current, snapshotCountRow] = await Promise.all([
@@ -130,16 +153,7 @@ export async function maybeTrainDirectionModel(force = false) {
     Date.now() - current.trainedAt >= RETRAIN_AFTER_MS;
   if (!shouldTrain) return current;
 
-  const result = await d1.prepare(`SELECT
-      market_slug, captured_at, btc_price, strike_price, seconds_left, variance,
-      raw_probability, calibrated_probability, up_bid, up_ask, down_bid, down_ask,
-      spread, top_depth, data_age_ms, momentum_15_bps, momentum_30_bps,
-      momentum_60_bps, up_contract_move_15, down_contract_move_15,
-      up_contract_move_30, down_contract_move_30, choppiness_60
-    FROM model_snapshots
-    ORDER BY captured_at DESC
-    LIMIT ?1`).bind(MAX_SNAPSHOTS).all<DirectionSnapshot>();
-  const rows = [...result.results].reverse();
+  const rows = await readDirectionSnapshots();
   const examples = buildDirectionExamples(rows);
   const marketCount = new Set(examples.map((example) => example.marketSlug)).size;
   if (examples.length < MIN_EXAMPLES || marketCount < MIN_MARKETS) {

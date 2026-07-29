@@ -1,9 +1,21 @@
 import { ensurePaperDatabase } from "../../../db/paper";
-import { maybeTrainDirectionModel, readDirectionModel } from "../../../db/ml";
+import {
+  maybeTrainDirectionModel,
+  readDirectionModel,
+  readDirectionTrainingDataset,
+} from "../../../db/ml";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     await ensurePaperDatabase();
+    if (new URL(request.url).searchParams.get("format") === "training") {
+      return Response.json(await readDirectionTrainingDataset(), {
+        headers: {
+          "Cache-Control": "no-store, max-age=0",
+          "Content-Disposition": 'attachment; filename="whalemaker-direction-training.json"',
+        },
+      });
+    }
     return Response.json({ model: await readDirectionModel() }, {
       headers: { "Cache-Control": "no-store, max-age=0" },
     });
