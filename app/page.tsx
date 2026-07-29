@@ -81,6 +81,8 @@ type ChartSample = {
   marketUp: number;
   rawUp: number;
   calibratedUp: number;
+  mlUpProbability: number;
+  futureUpAsk10: number;
   upAsk: number;
   upBid: number;
   downAsk: number;
@@ -293,15 +295,23 @@ function MetricChart({
         context.lineJoin = "round";
         context.lineCap = "round";
         context.beginPath();
-        samples.forEach((sample, index) => {
+        let started = false;
+        samples.forEach((sample) => {
           const value = Number(sample[item.key]);
+          if (!Number.isFinite(value)) {
+            started = false;
+            return;
+          }
           const x = xFor(sample.timestamp);
           const y = yFor(value);
-          if (index === 0) context.moveTo(x, y);
+          if (!started) context.moveTo(x, y);
           else context.lineTo(x, y);
+          started = true;
         });
         context.stroke();
-        const latest = samples.at(-1);
+        const latest = [...samples].reverse().find((sample) =>
+          Number.isFinite(Number(sample[item.key]))
+        );
         if (latest) {
           context.fillStyle = colors[item.color];
           context.beginPath();
@@ -326,7 +336,6 @@ function MetricChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [format, samples, seriesKey, referenceKey]);
 
-  const latest = samples.at(-1);
   return (
     <article className="chart-card">
       <div className="chart-heading">
@@ -337,9 +346,14 @@ function MetricChart({
         Live chart for {title}
       </canvas>
       <div className="chart-legend">
-        {series.map((item) => (
-          <span key={String(item.key)}><i className={`chart-dot ${item.color}`} /><b>{item.label}</b> {latest ? formatChartValue(Number(latest[item.key]), format) : "—"}</span>
-        ))}
+        {series.map((item) => {
+          const latest = [...samples].reverse().find((sample) =>
+            Number.isFinite(Number(sample[item.key]))
+          );
+          return (
+            <span key={String(item.key)}><i className={`chart-dot ${item.color}`} /><b>{item.label}</b> {latest ? formatChartValue(Number(latest[item.key]), format) : "—"}</span>
+          );
+        })}
       </div>
     </article>
   );
@@ -1048,6 +1062,8 @@ export default function Home() {
     marketUp,
     rawUp: model.raw,
     calibratedUp: model.calibrated,
+    mlUpProbability: mlUpProbability ?? Number.NaN,
+    futureUpAsk10: Number.NaN,
     upAsk: live.upAsk,
     upBid: live.upBid,
     downAsk: live.downAsk,
@@ -1103,6 +1119,23 @@ export default function Home() {
     // Chart history intentionally samples each new Polymarket quote after all model values are computed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live?.fetchedAt]);
+
+  const analyticsChartHistory = useMemo(() => {
+    return chartHistory.map((sample, index) => {
+      const future = chartHistory.slice(index + 1).find((candidate) =>
+        candidate.marketSlug === sample.marketSlug &&
+        candidate.timestamp - sample.timestamp >= 8_000
+      );
+      const delay = future ? future.timestamp - sample.timestamp : Number.POSITIVE_INFINITY;
+      return {
+        ...sample,
+        futureUpAsk10:
+          future && delay <= 14_000
+            ? future.upAsk
+            : Number.NaN,
+      };
+    });
+  }, [chartHistory]);
 
   const currentSnapshot = live && chainlink ? {
     action: "snapshot",
@@ -1314,9 +1347,10 @@ export default function Home() {
             </section>
             <div className="chart-section-head"><span>CORE SIGNALS</span><p>CLOB consensus compared directly with the engine’s BTC calculation, momentum, chop, and volatility.</p></div>
             <div className="chart-grid">
-              <MetricChart title="CLOB price vs calculated fair price" description="UP contract: normalized CLOB midpoint versus the Chainlink-only calculation and the blended execution fair price. DOWN is the inverse." samples={chartHistory} format="percent" series={[
-                { key: "marketUp", label: "CLOB midpoint", color: "blue" },
-                { key: "rawUp", label: "Chainlink calculation", color: "purple" },
+              <MetricChart title="CLOB price vs upcoming 10-second dynamics" description="Executable UP ask now versus the quote actually observed about 10 seconds later, the ML forecast, and execution fair. The realized future line appears only after that quote exists." samples={analyticsChartHistory} format="percent" series={[
+                { key: "upAsk", label: "CLOB UP ask now", color: "blue" },
+                { key: "futureUpAsk10", label: "Realized CLOB +10s", color: "amber" },
+                { key: "mlUpProbability", label: "ML UP forecast", color: "purple" },
                 { key: "calibratedUp", label: "Execution fair", color: "green" },
               ]} />
               <MetricChart title="BTC momentum" description="Log-return momentum across the engine’s 15, 30, and 60-second lookbacks." samples={chartHistory} format="bps" series={[
