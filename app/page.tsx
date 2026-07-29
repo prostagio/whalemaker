@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  predictUpPrice,
-  upPriceFeaturesFromValues,
-  type StoredUpPriceModel,
-} from "../lib/up-price-model";
+  outcomeFeaturesFromValues,
+  predictOutcomeProbability,
+  type StoredOutcomeModel,
+} from "../lib/outcome-model";
 
 type Side = "UP" | "DOWN";
 type EntryMode = "VALUE" | "MOMENTUM";
@@ -81,6 +81,7 @@ type ChartSample = {
   marketUp: number;
   rawUp: number;
   calibratedUp: number;
+  outcomeUpProbability: number;
   upAsk: number;
   upBid: number;
   downAsk: number;
@@ -533,7 +534,7 @@ export default function Home() {
   const [recoveringBetId, setRecoveringBetId] = useState<number | null>(null);
   const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, recoveries: 0, open_stake: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
-  const [upPriceModel, setUpPriceModel] = useState<StoredUpPriceModel | null>(null);
+  const [outcomeModel, setOutcomeModel] = useState<StoredOutcomeModel | null>(null);
   const [transactionFilter, setTransactionFilter] = useState<TransactionFilter>("all");
   const [activeTab, setActiveTab] = useState<AppTab>("engine");
   const [chartHistory, setChartHistory] = useState<ChartSample[]>([]);
@@ -549,14 +550,14 @@ export default function Home() {
     bets?: Bet[];
     stats?: typeof stats;
     snapshotCount?: number;
-    upPriceModel?: StoredUpPriceModel | null;
+    outcomeModel?: StoredOutcomeModel | null;
   }) => {
     if (typeof payload.account?.balance === "number") setBankroll(payload.account.balance);
     if (typeof payload.account?.starting_balance === "number") setStartingBalance(payload.account.starting_balance);
     if (payload.bets) setBets(payload.bets);
     if (payload.stats) setStats(payload.stats);
     if (typeof payload.snapshotCount === "number") setSnapshotCount(payload.snapshotCount);
-    if (payload.upPriceModel !== undefined) setUpPriceModel(payload.upPriceModel);
+    if (payload.outcomeModel !== undefined) setOutcomeModel(payload.outcomeModel);
   };
 
   const syncLedger = async () => {
@@ -867,7 +868,7 @@ export default function Home() {
     };
   }, [bankroll, bets, btc, chainlink, choppiness60, dataAge, dataError, downBidMove15, downMove15, downMove30, feedStatus, historySpanMs, ledgerError, live, marketUp, momentum15, momentum30, momentum60, quoteHistorySpanMs, seconds, strike, upBidMove15, upMove15, upMove30, variance]);
 
-  const upPriceFeatures = upPriceFeaturesFromValues({
+  const outcomeFeatures = outcomeFeaturesFromValues({
     btcPrice: btc,
     strikePrice: strike,
     secondsLeft: seconds,
@@ -876,7 +877,12 @@ export default function Home() {
     marketUp,
     upBid: live?.upBid ?? 0.5,
     upAsk: live?.upAsk ?? 0.5,
+    downBid: live?.downBid ?? 0.5,
     downAsk: live?.downAsk ?? 0.5,
+    upAskSize: live?.upAskSize ?? 0,
+    upBidSize: live?.upBidSize ?? 0,
+    downAskSize: live?.downAskSize ?? 0,
+    downBidSize: live?.downBidSize ?? 0,
     momentum15Bps: momentum15,
     momentum30Bps: momentum30,
     momentum60Bps: momentum60,
@@ -884,13 +890,11 @@ export default function Home() {
     downContractMove15: downMove15,
     upContractMove30: upMove30,
     downContractMove30: downMove30,
-    spread,
-    topDepth: depth,
     choppiness60,
     dataAgeMs: dataAge,
   });
-  const upPriceForecast = upPriceModel && live
-    ? predictUpPrice(upPriceModel, upPriceFeatures, live.upAsk)
+  const outcomeUpProbability = outcomeModel && live
+    ? predictOutcomeProbability(outcomeModel, outcomeFeatures, marketUp)
     : null;
 
   const placeBet = async (side = model.side) => {
@@ -1219,6 +1223,7 @@ export default function Home() {
     marketUp,
     rawUp: model.raw,
     calibratedUp: model.calibrated,
+    outcomeUpProbability: outcomeUpProbability ?? Number.NaN,
     upAsk: live.upAsk,
     upBid: live.upBid,
     downAsk: live.downAsk,
@@ -1275,19 +1280,10 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live?.fetchedAt]);
 
-  const priceChartHistory = useMemo(() => {
+  const outcomeChartHistory = useMemo(() => {
     const latestTimestamp = chartHistory.at(-1)?.timestamp ?? 0;
     return chartHistory.filter((sample) => sample.timestamp >= latestTimestamp - 60_000);
   }, [chartHistory]);
-  const latestPriceSample = priceChartHistory.at(-1);
-  const upPriceProjection = upPriceForecast && latestPriceSample ? {
-    fromTimestamp: latestPriceSample.timestamp,
-    fromValue: latestPriceSample.upAsk,
-    toTimestamp: latestPriceSample.timestamp + 10_000,
-    toValue: upPriceForecast.price,
-    label: "Projected UP ask +10s",
-    color: "purple" as const,
-  } satisfies ChartProjection : undefined;
 
   const currentSnapshot = live && chainlink ? {
     action: "snapshot",
@@ -1302,6 +1298,10 @@ export default function Home() {
     upAsk: live.upAsk,
     downBid: live.downBid,
     downAsk: live.downAsk,
+    upAskSize: live.upAskSize,
+    upBidSize: live.upBidSize,
+    downAskSize: live.downAskSize,
+    downBidSize: live.downBidSize,
     spread,
     topDepth: depth,
     dataAgeMs: Math.round(dataAge),
@@ -1469,41 +1469,42 @@ export default function Home() {
             </div>
             <section className="ml-direction-card" aria-labelledby="ml-direction-title">
               <div className="ml-prediction">
-                <p className="eyebrow">UP-SHARE PRICE FORECAST</p>
-                <h3 id="ml-direction-title">Projected Polymarket UP ask in 10 seconds</h3>
-                {upPriceModel?.status === "TRAINED" && upPriceForecast && live ? (
+                <p className="eyebrow">MARKET OUTCOME FORECAST</p>
+                <h3 id="ml-direction-title">Probability this five-minute market settles UP</h3>
+                {outcomeModel?.status === "TRAINED" && outcomeUpProbability != null ? (
                   <>
-                    <strong className={upPriceForecast.deltaCents >= 0 ? "positive" : "negative"}>
-                      {(live.upAsk * 100).toFixed(1)}¢ → {(upPriceForecast.price * 100).toFixed(1)}¢
+                    <strong className={outcomeUpProbability >= 0.5 ? "positive" : "negative"}>
+                      {outcomeUpProbability >= 0.5 ? "UP" : "DOWN"} · {(outcomeUpProbability * 100).toFixed(1)}% UP probability
                     </strong>
-                    <div className="ml-probability-bar" aria-label={`Projected UP ask ${(upPriceForecast.price * 100).toFixed(1)} cents`}>
-                      <i style={{ width: `${upPriceForecast.price * 100}%` }} />
+                    <div className="ml-probability-bar" aria-label={`Model UP outcome probability ${(outcomeUpProbability * 100).toFixed(1)} percent`}>
+                      <i style={{ width: `${outcomeUpProbability * 100}%` }} />
                     </div>
-                    <small>Projected move {upPriceForecast.deltaCents >= 0 ? "+" : ""}{upPriceForecast.deltaCents.toFixed(1)}¢ over the next 10 seconds</small>
+                    <small>CLOB baseline {(marketUp * 100).toFixed(1)}% · model adjustment {outcomeUpProbability - marketUp >= 0 ? "+" : ""}{((outcomeUpProbability - marketUp) * 100).toFixed(1)} points</small>
                   </>
                 ) : (
                   <>
-                    <strong className="pending-pnl">COLLECTING TRAINING DATA</strong>
+                    <strong className="pending-pnl">COLLECTING SETTLED MARKETS</strong>
                     <div className="ml-probability-bar collecting"><i /></div>
-                    <small>{upPriceModel?.message ?? "The first time-ordered price model will train automatically when enough labeled snapshots exist."}</small>
+                    <small>{outcomeModel?.message ?? "The nonlinear outcome model trains automatically after enough five-minute markets settle."}</small>
                   </>
                 )}
               </div>
               <div className="ml-validation">
-                <div><span>Held-out MAE</span><b>{upPriceModel?.maeCents == null ? "—" : `${upPriceModel.maeCents.toFixed(2)}¢`}</b></div>
-                <div><span>No-change MAE</span><b>{upPriceModel?.baselineMaeCents == null ? "—" : `${upPriceModel.baselineMaeCents.toFixed(2)}¢`}</b></div>
-                <div><span>Held-out RMSE</span><b>{upPriceModel?.rmseCents == null ? "—" : `${upPriceModel.rmseCents.toFixed(2)}¢`}</b></div>
-                <div><span>Move accuracy</span><b>{upPriceModel?.directionAccuracy == null ? "—" : pct(upPriceModel.directionAccuracy)}</b></div>
-                <div><span>R²</span><b>{upPriceModel?.rSquared == null ? "—" : upPriceModel.rSquared.toFixed(3)}</b></div>
-                <div><span>Labeled prices</span><b>{upPriceModel?.exampleCount ?? 0}</b></div>
-                <p>{upPriceModel?.message ?? "Waiting for the hosted snapshot database."} Evaluation uses later unseen markets; {upPriceModel?.testCount ?? 0} labeled prices are held out.</p>
+                <div><span>Held-out log loss</span><b>{outcomeModel?.logLoss == null ? "—" : outcomeModel.logLoss.toFixed(3)}</b></div>
+                <div><span>CLOB log loss</span><b>{outcomeModel?.baselineLogLoss == null ? "—" : outcomeModel.baselineLogLoss.toFixed(3)}</b></div>
+                <div><span>Brier score</span><b>{outcomeModel?.brierScore == null ? "—" : outcomeModel.brierScore.toFixed(3)}</b></div>
+                <div><span>Accuracy</span><b>{outcomeModel?.accuracy == null ? "—" : pct(outcomeModel.accuracy)}</b></div>
+                <div><span>Balanced accuracy</span><b>{outcomeModel?.balancedAccuracy == null ? "—" : pct(outcomeModel.balancedAccuracy)}</b></div>
+                <div><span>ROC AUC</span><b>{outcomeModel?.auc == null ? "—" : outcomeModel.auc.toFixed(3)}</b></div>
+                <p>{outcomeModel?.message ?? "Waiting for settled Polymarket outcomes."} {outcomeModel?.exampleCount ?? 0} labeled snapshots across {outcomeModel?.marketCount ?? 0} markets; {outcomeModel?.testCount ?? 0} later snapshots are held out.</p>
               </div>
             </section>
             <div className="chart-section-head"><span>CORE SIGNALS</span><p>CLOB consensus compared directly with the engine’s BTC calculation, momentum, chop, and volatility.</p></div>
             <div className="chart-grid">
-              <MetricChart featured scale="contract" title="UP share: current, fair & 10-second projection" description="The solid line is the executable UP ask, the dotted line is fair value, and the dashed projection continues from the latest UP price into the next 10 seconds." samples={priceChartHistory} projection={upPriceProjection} format="cents" series={[
+              <MetricChart featured scale="contract" title="UP outcome probability: market, fair & ML" description="The executable UP ask represents the crowd, fair price is the engine calculation, and the nonlinear ML line estimates the probability that the market ultimately settles UP." samples={outcomeChartHistory} format="cents" series={[
                 { key: "upAsk", label: "Current UP ask", color: "blue", fill: true },
                 { key: "calibratedUp", label: "Fair price", color: "green", style: "dotted" },
+                { key: "outcomeUpProbability", label: "ML settlement probability", color: "purple", style: "dashed" },
               ]} />
               <MetricChart title="BTC momentum" description="Log-return momentum across the engine’s 15, 30, and 60-second lookbacks." samples={chartHistory} format="bps" series={[
                 { key: "momentum15", label: "15 seconds", color: "green" },

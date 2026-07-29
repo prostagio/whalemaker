@@ -73,6 +73,10 @@ export async function ensurePaperDatabase() {
       up_ask REAL NOT NULL,
       down_bid REAL NOT NULL,
       down_ask REAL NOT NULL,
+      up_ask_size REAL NOT NULL DEFAULT 0,
+      up_bid_size REAL NOT NULL DEFAULT 0,
+      down_ask_size REAL NOT NULL DEFAULT 0,
+      down_bid_size REAL NOT NULL DEFAULT 0,
       spread REAL NOT NULL,
       top_depth REAL NOT NULL,
       data_age_ms INTEGER NOT NULL,
@@ -144,6 +148,37 @@ export async function ensurePaperDatabase() {
       l2 REAL,
       message TEXT NOT NULL
     )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS model_market_outcomes (
+      market_slug TEXT PRIMARY KEY,
+      outcome TEXT NOT NULL,
+      open_price REAL NOT NULL,
+      close_price REAL NOT NULL,
+      resolved_at INTEGER NOT NULL,
+      source TEXT NOT NULL
+    )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS outcome_models (
+      id INTEGER PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'COLLECTING',
+      trained_at INTEGER NOT NULL,
+      snapshot_count INTEGER NOT NULL DEFAULT 0,
+      example_count INTEGER NOT NULL DEFAULT 0,
+      market_count INTEGER NOT NULL DEFAULT 0,
+      train_count INTEGER NOT NULL DEFAULT 0,
+      test_count INTEGER NOT NULL DEFAULT 0,
+      positive_rate REAL,
+      log_loss REAL,
+      brier_score REAL,
+      accuracy REAL,
+      balanced_accuracy REAL,
+      auc REAL,
+      calibration_error REAL,
+      baseline_log_loss REAL,
+      baseline_brier_score REAL,
+      feature_names TEXT,
+      trees TEXT,
+      config TEXT,
+      message TEXT NOT NULL
+    )`),
     d1.prepare("CREATE INDEX IF NOT EXISTS paper_bets_status_end_idx ON paper_bets (status, market_end_ms)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS paper_bets_placed_idx ON paper_bets (placed_at)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS model_snapshots_market_time_idx ON model_snapshots (market_slug, captured_at)"),
@@ -174,6 +209,10 @@ export async function ensurePaperDatabase() {
     ["up_contract_move_30", "REAL NOT NULL DEFAULT 0"],
     ["down_contract_move_30", "REAL NOT NULL DEFAULT 0"],
     ["entry_mode", "TEXT NOT NULL DEFAULT 'WAIT'"],
+    ["up_ask_size", "REAL NOT NULL DEFAULT 0"],
+    ["up_bid_size", "REAL NOT NULL DEFAULT 0"],
+    ["down_ask_size", "REAL NOT NULL DEFAULT 0"],
+    ["down_bid_size", "REAL NOT NULL DEFAULT 0"],
   ] as const;
   for (const [name, definition] of snapshotAdditions) {
     if (!snapshotColumns.results.some((column) => column.name === name)) {
@@ -439,11 +478,14 @@ export async function storeModelSnapshot(input: Record<string, unknown>) {
   await d1.prepare(`INSERT INTO model_snapshots
     (market_slug, captured_at, btc_price, strike_price, seconds_left, variance,
      raw_probability, calibrated_probability, up_bid, up_ask, down_bid, down_ask,
+     up_ask_size, up_bid_size, down_ask_size, down_bid_size,
      spread, top_depth, data_age_ms, momentum_15_bps, momentum_30_bps,
      momentum_60_bps, up_contract_move_15, down_contract_move_15,
      up_contract_move_30, down_contract_move_30, choppiness_60,
      volatility_regime, entry_mode, required_edge, signal, blocked_reason)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)`)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+      ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+      ?29, ?30, ?31, ?32)`)
     .bind(
       input.marketSlug,
       Date.now(),
@@ -457,6 +499,10 @@ export async function storeModelSnapshot(input: Record<string, unknown>) {
       input.upAsk,
       input.downBid,
       input.downAsk,
+      input.upAskSize,
+      input.upBidSize,
+      input.downAskSize,
+      input.downBidSize,
       input.spread,
       input.topDepth,
       input.dataAgeMs,
@@ -484,6 +530,8 @@ export async function resetPaperLedger() {
     d1.prepare("DELETE FROM paper_market_locks"),
     d1.prepare("DELETE FROM model_snapshots"),
     d1.prepare("DELETE FROM up_price_models"),
+    d1.prepare("DELETE FROM model_market_outcomes"),
+    d1.prepare("DELETE FROM outcome_models"),
     d1.prepare("UPDATE paper_accounts SET balance = 100, updated_at = ?1 WHERE id = 1")
       .bind(Date.now()),
   ]);
