@@ -108,3 +108,27 @@ export const directionModels = sqliteTable("direction_models", {
   l2: real("l2"),
   message: text("message").notNull(),
 });
+
+export const upPriceModels = sqliteTable("up_price_models", {
+  id: integer("id").primaryKey(),
+  status: text("status", { enum: ["COLLECTING", "TRAINED"] }).notNull().default("COLLECTING"),
+  trainedAt: integer("trained_at").notNull(),
+  horizonSeconds: integer("horizon_seconds").notNull().default(10),
+  snapshotCount: integer("snapshot_count").notNull().default(0),
+  exampleCount: integer("example_count").notNull().default(0),
+  marketCount: integer("market_count").notNull().default(0),
+  trainCount: integer("train_count").notNull().default(0),
+  testCount: integer("test_count").notNull().default(0),
+  maeCents: real("mae_cents"),
+  rmseCents: real("rmse_cents"),
+  baselineMaeCents: real("baseline_mae_cents"),
+  directionAccuracy: real("direction_accuracy"),
+  rSquared: real("r_squared"),
+  featureNames: text("feature_names"),
+  means: text("means"),
+  scales: text("scales"),
+  weights: text("weights"),
+  bias: real("bias"),
+  l2: real("l2"),
+  message: text("message").notNull(),
+});

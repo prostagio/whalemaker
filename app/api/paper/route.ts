@@ -8,7 +8,7 @@ import {
   settleExpiredBetsForTesting,
   storeModelSnapshot,
 } from "../../../db/paper";
-import { maybeTrainDirectionModel } from "../../../db/ml";
+import { maybeTrainUpPriceModel } from "../../../db/up-price-ml";
 
 const csvCell = (value: string | number | null) => {
   const text = value == null ? "" : String(value);
@@ -37,11 +37,11 @@ const betsCsv = async () => {
 
 const response = async () => {
   await settleExpiredBetsForTesting();
-  const [ledger, directionModel] = await Promise.all([
+  const [ledger, upPriceModel] = await Promise.all([
     readPaperLedger(),
-    maybeTrainDirectionModel(),
+    maybeTrainUpPriceModel(),
   ]);
-  return Response.json({ ...ledger, directionModel }, {
+  return Response.json({ ...ledger, upPriceModel }, {
     headers: { "Cache-Control": "no-store, max-age=0" },
   });
 };

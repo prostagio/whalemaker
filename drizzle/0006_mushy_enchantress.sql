@@ -1,0 +1,23 @@
+CREATE TABLE `up_price_models` (
+	`id` integer PRIMARY KEY NOT NULL,
+	`status` text DEFAULT 'COLLECTING' NOT NULL,
+	`trained_at` integer NOT NULL,
+	`horizon_seconds` integer DEFAULT 10 NOT NULL,
+	`snapshot_count` integer DEFAULT 0 NOT NULL,
+	`example_count` integer DEFAULT 0 NOT NULL,
+	`market_count` integer DEFAULT 0 NOT NULL,
+	`train_count` integer DEFAULT 0 NOT NULL,
+	`test_count` integer DEFAULT 0 NOT NULL,
+	`mae_cents` real,
+	`rmse_cents` real,
+	`baseline_mae_cents` real,
+	`direction_accuracy` real,
+	`r_squared` real,
+	`feature_names` text,
+	`means` text,
+	`scales` text,
+	`weights` text,
+	`bias` real,
+	`l2` real,
+	`message` text NOT NULL
+);

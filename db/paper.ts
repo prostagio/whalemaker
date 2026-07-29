@@ -121,6 +121,29 @@ export async function ensurePaperDatabase() {
       l2 REAL,
       message TEXT NOT NULL
     )`),
+    d1.prepare(`CREATE TABLE IF NOT EXISTS up_price_models (
+      id INTEGER PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'COLLECTING',
+      trained_at INTEGER NOT NULL,
+      horizon_seconds INTEGER NOT NULL DEFAULT 10,
+      snapshot_count INTEGER NOT NULL DEFAULT 0,
+      example_count INTEGER NOT NULL DEFAULT 0,
+      market_count INTEGER NOT NULL DEFAULT 0,
+      train_count INTEGER NOT NULL DEFAULT 0,
+      test_count INTEGER NOT NULL DEFAULT 0,
+      mae_cents REAL,
+      rmse_cents REAL,
+      baseline_mae_cents REAL,
+      direction_accuracy REAL,
+      r_squared REAL,
+      feature_names TEXT,
+      means TEXT,
+      scales TEXT,
+      weights TEXT,
+      bias REAL,
+      l2 REAL,
+      message TEXT NOT NULL
+    )`),
     d1.prepare("CREATE INDEX IF NOT EXISTS paper_bets_status_end_idx ON paper_bets (status, market_end_ms)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS paper_bets_placed_idx ON paper_bets (placed_at)"),
     d1.prepare("CREATE INDEX IF NOT EXISTS model_snapshots_market_time_idx ON model_snapshots (market_slug, captured_at)"),
@@ -460,6 +483,7 @@ export async function resetPaperLedger() {
     d1.prepare("DELETE FROM paper_bets"),
     d1.prepare("DELETE FROM paper_market_locks"),
     d1.prepare("DELETE FROM model_snapshots"),
+    d1.prepare("DELETE FROM up_price_models"),
     d1.prepare("UPDATE paper_accounts SET balance = 100, updated_at = ?1 WHERE id = 1")
       .bind(Date.now()),
   ]);
