@@ -107,7 +107,7 @@ const resolveCompletedMarketOutcomes = async () => {
     LEFT JOIN model_market_outcomes o ON o.market_slug = s.market_slug
     WHERE o.market_slug IS NULL
     GROUP BY s.market_slug
-    ORDER BY MIN(s.captured_at)
+    ORDER BY MAX(s.captured_at) DESC
     LIMIT 32`).all<{ market_slug: string }>();
   const now = Date.now();
   const eligible = (missing.results as { market_slug: string }[]).map((row): EligibleMarket => {
@@ -266,15 +266,19 @@ export async function maybeTrainOutcomeModel(force = false) {
   const development = [...train, ...validation].sort((left, right) => left.timestamp - right.timestamp);
   const fitted = fitOutcomeBoost(development, selectedConfig);
   fitted.config.correctionScale = selectedConfig.correctionScale;
-  const testProbabilities = outcomeProbabilities(test, fitted);
-  const metrics = evaluateOutcomeProbabilities(test, testProbabilities);
   const baselineMetrics = evaluateOutcomeProbabilities(
     test,
     test.map((example) => example.marketProbability)
   );
-  const message = metrics.logLoss < baselineMetrics.logLoss
-    ? "Outcome model beats the raw CLOB probability on later unseen markets."
-    : "Outcome model is trained, but the raw CLOB probability remains the stronger unseen-market baseline.";
+  const candidateMetrics = evaluateOutcomeProbabilities(test, outcomeProbabilities(test, fitted));
+  const correctionsPassSafetyGate =
+    candidateMetrics.logLoss <= baselineMetrics.logLoss - 0.002 &&
+    candidateMetrics.brierScore < baselineMetrics.brierScore;
+  if (!correctionsPassSafetyGate) fitted.config.correctionScale = 0;
+  const metrics = evaluateOutcomeProbabilities(test, outcomeProbabilities(test, fitted));
+  const message = correctionsPassSafetyGate
+    ? "Learned corrections beat the raw CLOB probability on later unseen markets and are active."
+    : "Learned corrections failed the unseen-market safety gate; the live forecast falls back to raw CLOB probability.";
   await d1.prepare(`INSERT INTO outcome_models
     (id, status, trained_at, snapshot_count, example_count, market_count,
      train_count, test_count, positive_rate, log_loss, brier_score, accuracy,

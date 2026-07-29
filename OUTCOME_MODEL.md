@@ -56,6 +56,11 @@ Validation log loss selects the winner, with Brier score as the tie-breaker.
 A shrinkage of zero means the CLOB baseline remains preferable to learned
 corrections.
 
+The live deployment also fails closed: learned corrections remain disabled
+unless they improve held-out log loss by at least 0.002 and also improve the
+held-out Brier score. When that safety gate fails, the displayed ML probability
+equals the raw CLOB baseline rather than applying a demonstrably worse model.
+
 ## Evaluation
 
 Markets are ordered chronologically:
