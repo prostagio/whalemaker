@@ -125,12 +125,15 @@ type ChartSeries = {
   key: keyof ChartSample;
   label: string;
   color: "green" | "red" | "amber" | "blue" | "purple" | "cyan";
+  style?: "solid" | "dashed" | "dotted";
+  fill?: boolean;
 };
 type ChartReferenceLine = {
   value: number;
   label: string;
   color: ChartSeries["color"];
 };
+type ChartScale = "auto" | "contract";
 
 const VARIANCE_FLOOR = 2.3020308442843487e-9;
 const FIXED_SHARES = 5;
@@ -172,6 +175,14 @@ const formatChartValue = (value: number, format: ChartFormat) => {
   if (format === "scientific") return value.toExponential(2);
   return value.toFixed(Math.abs(value) < 10 ? 3 : 1);
 };
+const niceChartStep = (range: number, targetTicks = 5) => {
+  if (!Number.isFinite(range) || range <= 0) return 1;
+  const roughStep = range / Math.max(1, targetTicks - 1);
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / magnitude;
+  const factor = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10;
+  return factor * magnitude;
+};
 
 function MetricChart({
   title,
@@ -180,6 +191,8 @@ function MetricChart({
   series,
   format,
   referenceLines = [],
+  scale = "auto",
+  featured = false,
 }: {
   title: string;
   description: string;
@@ -187,9 +200,11 @@ function MetricChart({
   series: ChartSeries[];
   format: ChartFormat;
   referenceLines?: ChartReferenceLine[];
+  scale?: ChartScale;
+  featured?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const seriesKey = series.map((item) => `${String(item.key)}-${item.color}`).join("|");
+  const seriesKey = series.map((item) => `${String(item.key)}-${item.color}-${item.style}-${item.fill}`).join("|");
   const referenceKey = referenceLines.map((item) => `${item.value}-${item.label}-${item.color}`).join("|");
 
   useEffect(() => {
@@ -199,7 +214,7 @@ function MetricChart({
       const context = canvas.getContext("2d");
       if (!context) return;
       const width = Math.max(280, canvas.clientWidth);
-      const height = 190;
+      const height = Math.max(170, canvas.clientHeight || (featured ? 250 : 190));
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = width * ratio;
       canvas.height = height * ratio;
@@ -217,10 +232,10 @@ function MetricChart({
         purple: styles.getPropertyValue("--purple").trim(),
         cyan: styles.getPropertyValue("--cyan").trim(),
       };
-      const left = 58;
-      const right = 12;
-      const top = 12;
-      const bottom = 24;
+      const left = 62;
+      const right = 16;
+      const top = 16;
+      const bottom = 30;
       const plotWidth = width - left - right;
       const plotHeight = height - top - bottom;
       const values = samples.flatMap((sample) =>
@@ -229,35 +244,72 @@ function MetricChart({
       values.push(...referenceLines.map((item) => item.value));
       let minimum = Math.min(...values);
       let maximum = Math.max(...values);
+      let tickStep = 0.25;
       if (!values.length) {
         minimum = 0;
         maximum = 1;
-      }
-      if (minimum === maximum) {
+      } else if (scale === "contract") {
+        const rawMinimum = Math.max(0, minimum);
+        const rawMaximum = Math.min(1, maximum);
+        const center = (rawMinimum + rawMaximum) / 2;
+        const dataRange = rawMaximum - rawMinimum;
+        const visibleRange = Math.max(0.20, dataRange * 1.28);
+        let lower = Math.max(0, center - visibleRange / 2);
+        let upper = Math.min(1, center + visibleRange / 2);
+        if (upper - lower < Math.min(0.20, visibleRange)) {
+          if (lower === 0) upper = Math.min(1, lower + visibleRange);
+          else lower = Math.max(0, upper - visibleRange);
+        }
+        tickStep = Math.max(0.05, niceChartStep(upper - lower));
+        minimum = Math.max(0, Math.floor(lower / tickStep) * tickStep);
+        maximum = Math.min(1, Math.ceil(upper / tickStep) * tickStep);
+      } else if (minimum === maximum) {
         const padding = Math.abs(minimum) > 0 ? Math.abs(minimum) * 0.08 : 1;
-        minimum -= padding;
-        maximum += padding;
+        tickStep = niceChartStep(padding * 2);
+        minimum = Math.floor((minimum - padding) / tickStep) * tickStep;
+        maximum = Math.ceil((maximum + padding) / tickStep) * tickStep;
       } else {
         const padding = (maximum - minimum) * 0.08;
-        minimum -= padding;
-        maximum += padding;
+        tickStep = niceChartStep(maximum - minimum + padding * 2);
+        minimum = Math.floor((minimum - padding) / tickStep) * tickStep;
+        maximum = Math.ceil((maximum + padding) / tickStep) * tickStep;
+      }
+      if (maximum <= minimum) {
+        maximum = minimum + tickStep;
       }
 
-      context.font = "10px Arial";
+      const yTicks: number[] = [];
+      for (let value = minimum; value <= maximum + tickStep / 2; value += tickStep) {
+        yTicks.push(Number(value.toFixed(12)));
+      }
+
+      context.save();
+      const plotBackground = context.createLinearGradient(0, top, 0, top + plotHeight);
+      plotBackground.addColorStop(0, styles.getPropertyValue("--surface-2").trim());
+      plotBackground.addColorStop(1, styles.getPropertyValue("--surface").trim());
+      context.globalAlpha = featured ? 0.5 : 0.26;
+      context.fillStyle = plotBackground;
+      context.fillRect(left, top, plotWidth, plotHeight);
+      context.restore();
+
+      context.font = featured ? "11px Arial" : "10px Arial";
       context.lineWidth = 1;
-      for (let index = 0; index < 4; index += 1) {
-        const y = top + (plotHeight * index) / 3;
-        const value = maximum - ((maximum - minimum) * index) / 3;
+      const yFor = (value: number) => top + ((maximum - value) / (maximum - minimum)) * plotHeight;
+      yTicks.forEach((value) => {
+        const y = yFor(value);
+        context.save();
+        context.globalAlpha = 0.72;
         context.strokeStyle = line;
         context.beginPath();
         context.moveTo(left, y);
         context.lineTo(width - right, y);
         context.stroke();
+        context.restore();
         context.fillStyle = muted;
         context.textAlign = "right";
         context.textBaseline = "middle";
         context.fillText(formatChartValue(value, format), left - 8, y);
-      }
+      });
 
       if (samples.length < 2) {
         context.fillStyle = muted;
@@ -270,7 +322,24 @@ function MetricChart({
       const start = samples[0].timestamp;
       const end = samples.at(-1)?.timestamp ?? start + 1;
       const xFor = (timestamp: number) => left + ((timestamp - start) / Math.max(1, end - start)) * plotWidth;
-      const yFor = (value: number) => top + ((maximum - value) / (maximum - minimum)) * plotHeight;
+      const xTickCount = width < 440 ? 2 : 5;
+      for (let index = 0; index < xTickCount; index += 1) {
+        const fraction = index / Math.max(1, xTickCount - 1);
+        const timestamp = start + (end - start) * fraction;
+        const x = xFor(timestamp);
+        context.save();
+        context.globalAlpha = 0.45;
+        context.strokeStyle = line;
+        context.beginPath();
+        context.moveTo(x, top);
+        context.lineTo(x, top + plotHeight);
+        context.stroke();
+        context.restore();
+        context.fillStyle = muted;
+        context.textBaseline = "bottom";
+        context.textAlign = index === 0 ? "left" : index === xTickCount - 1 ? "right" : "center";
+        context.fillText(new Date(timestamp).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }), x, height);
+      }
 
       referenceLines.forEach((item) => {
         const y = yFor(item.value);
@@ -290,10 +359,37 @@ function MetricChart({
       });
 
       series.forEach((item) => {
+        if (item.fill) {
+          const finiteSamples = samples.filter((sample) =>
+            Number.isFinite(Number(sample[item.key]))
+          );
+          if (finiteSamples.length > 1) {
+            const gradient = context.createLinearGradient(0, top, 0, top + plotHeight);
+            gradient.addColorStop(0, colors[item.color]);
+            gradient.addColorStop(1, "transparent");
+            context.save();
+            context.globalAlpha = 0.13;
+            context.fillStyle = gradient;
+            context.beginPath();
+            context.moveTo(xFor(finiteSamples[0].timestamp), top + plotHeight);
+            finiteSamples.forEach((sample) => {
+              context.lineTo(xFor(sample.timestamp), yFor(Number(sample[item.key])));
+            });
+            context.lineTo(xFor(finiteSamples.at(-1)!.timestamp), top + plotHeight);
+            context.closePath();
+            context.fill();
+            context.restore();
+          }
+        }
+
+        context.save();
         context.strokeStyle = colors[item.color];
-        context.lineWidth = 2;
+        context.lineWidth = item.fill ? 2.8 : 2;
         context.lineJoin = "round";
         context.lineCap = "round";
+        context.setLineDash(item.style === "dashed" ? [8, 5] : item.style === "dotted" ? [2, 5] : []);
+        context.shadowColor = item.fill ? colors[item.color] : "transparent";
+        context.shadowBlur = item.fill ? 7 : 0;
         context.beginPath();
         let started = false;
         samples.forEach((sample) => {
@@ -309,23 +405,22 @@ function MetricChart({
           started = true;
         });
         context.stroke();
+        context.restore();
         const latest = [...samples].reverse().find((sample) =>
           Number.isFinite(Number(sample[item.key]))
         );
         if (latest) {
+          context.save();
           context.fillStyle = colors[item.color];
+          context.strokeStyle = styles.getPropertyValue("--surface").trim();
+          context.lineWidth = 2;
           context.beginPath();
-          context.arc(xFor(latest.timestamp), yFor(Number(latest[item.key])), 3, 0, Math.PI * 2);
+          context.arc(xFor(latest.timestamp), yFor(Number(latest[item.key])), item.fill ? 4 : 3, 0, Math.PI * 2);
           context.fill();
+          context.stroke();
+          context.restore();
         }
       });
-
-      context.fillStyle = muted;
-      context.textBaseline = "bottom";
-      context.textAlign = "left";
-      context.fillText(new Date(start).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }), left, height);
-      context.textAlign = "right";
-      context.fillText(new Date(end).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }), width - right, height);
     };
 
     draw();
@@ -334,10 +429,10 @@ function MetricChart({
     return () => observer.disconnect();
     // Inline chart declarations are represented by stable keys so they do not redraw on every clock tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, samples, seriesKey, referenceKey]);
+  }, [featured, format, samples, scale, seriesKey, referenceKey]);
 
   return (
-    <article className="chart-card">
+    <article className={`chart-card${featured ? " featured" : ""}`}>
       <div className="chart-heading">
         <div><h3>{title}</h3><p>{description}</p></div>
         <span>{samples.length} samples</span>
@@ -351,7 +446,7 @@ function MetricChart({
             Number.isFinite(Number(sample[item.key]))
           );
           return (
-            <span key={String(item.key)}><i className={`chart-dot ${item.color}`} /><b>{item.label}</b> {latest ? formatChartValue(Number(latest[item.key]), format) : "—"}</span>
+            <span key={String(item.key)}><i className={`chart-key ${item.color} ${item.style ?? "solid"}`} /><b>{item.label}</b> {latest ? formatChartValue(Number(latest[item.key]), format) : "—"}</span>
           );
         })}
       </div>
@@ -1347,11 +1442,11 @@ export default function Home() {
             </section>
             <div className="chart-section-head"><span>CORE SIGNALS</span><p>CLOB consensus compared directly with the engine’s BTC calculation, momentum, chop, and volatility.</p></div>
             <div className="chart-grid">
-              <MetricChart title="CLOB price vs upcoming 10-second dynamics" description="Executable UP ask now versus the quote actually observed about 10 seconds later, the ML forecast, and execution fair. The realized future line appears only after that quote exists." samples={analyticsChartHistory} format="percent" series={[
-                { key: "upAsk", label: "CLOB UP ask now", color: "blue" },
-                { key: "futureUpAsk10", label: "Realized CLOB +10s", color: "amber" },
-                { key: "mlUpProbability", label: "ML UP forecast", color: "purple" },
-                { key: "calibratedUp", label: "Execution fair", color: "green" },
+              <MetricChart featured scale="contract" title="CLOB price vs upcoming 10-second dynamics" description="Adaptive contract-price scale in cents: executable UP ask now versus the quote observed about 10 seconds later, the ML forecast, and execution fair." samples={analyticsChartHistory} format="cents" series={[
+                { key: "upAsk", label: "CLOB UP ask now", color: "blue", fill: true },
+                { key: "futureUpAsk10", label: "Realized CLOB +10s", color: "amber", style: "dashed" },
+                { key: "mlUpProbability", label: "ML UP forecast", color: "purple", style: "dashed" },
+                { key: "calibratedUp", label: "Execution fair", color: "green", style: "dotted" },
               ]} />
               <MetricChart title="BTC momentum" description="Log-return momentum across the engine’s 15, 30, and 60-second lookbacks." samples={chartHistory} format="bps" series={[
                 { key: "momentum15", label: "15 seconds", color: "green" },
