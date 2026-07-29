@@ -1,6 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  directionFeaturesFromValues,
+  predictDirectionProbability,
+  type StoredDirectionModel,
+} from "../lib/direction-model";
 
 type Side = "UP" | "DOWN";
 type EntryMode = "VALUE" | "MOMENTUM";
@@ -354,6 +359,7 @@ export default function Home() {
   const [recoveringBetId, setRecoveringBetId] = useState<number | null>(null);
   const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, recoveries: 0, open_stake: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
+  const [directionModel, setDirectionModel] = useState<StoredDirectionModel | null>(null);
   const [transactionFilter, setTransactionFilter] = useState<TransactionFilter>("all");
   const [activeTab, setActiveTab] = useState<AppTab>("engine");
   const [chartHistory, setChartHistory] = useState<ChartSample[]>([]);
@@ -369,12 +375,14 @@ export default function Home() {
     bets?: Bet[];
     stats?: typeof stats;
     snapshotCount?: number;
+    directionModel?: StoredDirectionModel | null;
   }) => {
     if (typeof payload.account?.balance === "number") setBankroll(payload.account.balance);
     if (typeof payload.account?.starting_balance === "number") setStartingBalance(payload.account.starting_balance);
     if (payload.bets) setBets(payload.bets);
     if (payload.stats) setStats(payload.stats);
     if (typeof payload.snapshotCount === "number") setSnapshotCount(payload.snapshotCount);
+    if (payload.directionModel !== undefined) setDirectionModel(payload.directionModel);
   };
 
   const syncLedger = async () => {
@@ -684,6 +692,35 @@ export default function Home() {
       selectedEdge: selected.edge, valueEdge: value.edge, valuePass, momentumEntryPass,
     };
   }, [bankroll, bets, btc, chainlink, choppiness60, dataAge, dataError, downBidMove15, downMove15, downMove30, feedStatus, historySpanMs, ledgerError, live, marketUp, momentum15, momentum30, momentum60, quoteHistorySpanMs, seconds, strike, upBidMove15, upMove15, upMove30, variance]);
+
+  const directionFeatures = directionFeaturesFromValues({
+    btcPrice: btc,
+    strikePrice: strike,
+    secondsLeft: seconds,
+    variance,
+    rawProbability: model.raw,
+    marketUp,
+    momentum15Bps: momentum15,
+    momentum30Bps: momentum30,
+    momentum60Bps: momentum60,
+    upContractMove15: upMove15,
+    downContractMove15: downMove15,
+    upContractMove30: upMove30,
+    downContractMove30: downMove30,
+    spread,
+    topDepth: depth,
+    choppiness60,
+    dataAgeMs: dataAge,
+  });
+  const mlUpProbability = directionModel
+    ? predictDirectionProbability(directionModel, directionFeatures)
+    : null;
+  const mlDirection: Side | null = mlUpProbability == null
+    ? null
+    : mlUpProbability >= directionModel!.threshold ? "UP" : "DOWN";
+  const mlConfidence = mlUpProbability == null
+    ? null
+    : mlDirection === "UP" ? mlUpProbability : 1 - mlUpProbability;
 
   const placeBet = async (side = model.side) => {
     if (bankroll < model.orderCost || model.blocked || !live || placing) return;
@@ -1245,6 +1282,36 @@ export default function Home() {
                 <span><small>Gate health</small><b>{qualityCount}/6</b></span>
               </div>
             </div>
+            <section className="ml-direction-card" aria-labelledby="ml-direction-title">
+              <div className="ml-prediction">
+                <p className="eyebrow">MACHINE-LEARNING FORECAST</p>
+                <h3 id="ml-direction-title">BTC direction in the next 10 seconds</h3>
+                {directionModel?.status === "TRAINED" && mlDirection && mlConfidence != null ? (
+                  <>
+                    <strong className={mlDirection === "UP" ? "positive" : "negative"}>{mlDirection} · {(mlConfidence * 100).toFixed(1)}% confidence</strong>
+                    <div className="ml-probability-bar" aria-label={`ML UP probability ${(mlUpProbability! * 100).toFixed(1)} percent`}>
+                      <i style={{ width: `${mlUpProbability! * 100}%` }} />
+                    </div>
+                    <small>DOWN {((1 - mlUpProbability!) * 100).toFixed(1)}% · UP {(mlUpProbability! * 100).toFixed(1)}%</small>
+                  </>
+                ) : (
+                  <>
+                    <strong className="pending-pnl">COLLECTING TRAINING DATA</strong>
+                    <div className="ml-probability-bar collecting"><i /></div>
+                    <small>{directionModel?.message ?? "The first time-ordered model will train automatically when enough labeled snapshots exist."}</small>
+                  </>
+                )}
+              </div>
+              <div className="ml-validation">
+                <div><span>Held-out accuracy</span><b>{directionModel?.accuracy == null ? "—" : pct(directionModel.accuracy)}</b></div>
+                <div><span>Majority baseline</span><b>{directionModel?.baselineAccuracy == null ? "—" : pct(directionModel.baselineAccuracy)}</b></div>
+                <div><span>Balanced accuracy</span><b>{directionModel?.balancedAccuracy == null ? "—" : pct(directionModel.balancedAccuracy)}</b></div>
+                <div><span>ROC AUC</span><b>{directionModel?.auc == null ? "—" : directionModel.auc.toFixed(3)}</b></div>
+                <div><span>Labeled examples</span><b>{directionModel?.exampleCount ?? 0}</b></div>
+                <div><span>Unseen test examples</span><b>{directionModel?.testCount ?? 0}</b></div>
+                <p>{directionModel?.message ?? "Waiting for the hosted snapshot database."} Markets are split chronologically so later games never leak into training.</p>
+              </div>
+            </section>
             <div className="chart-section-head"><span>CORE SIGNALS</span><p>CLOB consensus compared directly with the engine’s BTC calculation, momentum, chop, and volatility.</p></div>
             <div className="chart-grid">
               <MetricChart title="CLOB price vs calculated fair price" description="UP contract: normalized CLOB midpoint versus the Chainlink-only calculation and the blended execution fair price. DOWN is the inverse." samples={chartHistory} format="percent" series={[

@@ -80,3 +80,31 @@ export const modelSnapshots = sqliteTable(
     index("model_snapshots_market_time_idx").on(table.marketSlug, table.capturedAt),
   ]
 );
+
+export const directionModels = sqliteTable("direction_models", {
+  id: integer("id").primaryKey(),
+  status: text("status", { enum: ["COLLECTING", "TRAINED"] }).notNull().default("COLLECTING"),
+  trainedAt: integer("trained_at").notNull(),
+  horizonSeconds: integer("horizon_seconds").notNull().default(10),
+  snapshotCount: integer("snapshot_count").notNull().default(0),
+  exampleCount: integer("example_count").notNull().default(0),
+  marketCount: integer("market_count").notNull().default(0),
+  trainCount: integer("train_count").notNull().default(0),
+  testCount: integer("test_count").notNull().default(0),
+  positiveRate: real("positive_rate"),
+  baselineAccuracy: real("baseline_accuracy"),
+  accuracy: real("accuracy"),
+  balancedAccuracy: real("balanced_accuracy"),
+  precision: real("precision"),
+  recall: real("recall"),
+  auc: real("auc"),
+  logLoss: real("log_loss"),
+  threshold: real("threshold").notNull().default(0.5),
+  featureNames: text("feature_names"),
+  means: text("means"),
+  scales: text("scales"),
+  weights: text("weights"),
+  bias: real("bias"),
+  l2: real("l2"),
+  message: text("message").notNull(),
+});
