@@ -33,6 +33,7 @@ type QuoteTick = {
   downBid: number;
 };
 type TransactionFilter = "all" | "buy" | "sell";
+type AppTab = "engine" | "analytics" | "positions" | "ledger";
 type ShareTransaction = {
   id: string;
   positionId: number;
@@ -67,6 +68,57 @@ type LiveMarket = {
   downBidSize: number;
   fetchedAt: number;
 };
+type ChartSample = {
+  marketSlug: string;
+  timestamp: number;
+  btc: number;
+  strike: number;
+  marketUp: number;
+  rawUp: number;
+  calibratedUp: number;
+  upAsk: number;
+  upBid: number;
+  downAsk: number;
+  downBid: number;
+  upEdge: number;
+  downEdge: number;
+  selectedEdge: number;
+  valueEdge: number;
+  momentum15: number;
+  momentum30: number;
+  momentum60: number;
+  upMove15: number;
+  downMove15: number;
+  upMove30: number;
+  downMove30: number;
+  upSpread: number;
+  downSpread: number;
+  selectedSpread: number;
+  upDepth: number;
+  downDepth: number;
+  selectedDepth: number;
+  choppiness: number;
+  variance: number;
+  qUsed: number;
+  sigmaBps: number;
+  z: number;
+  distanceBps: number;
+  secondsLeft: number;
+  dataAgeSeconds: number;
+  selectedAsk: number;
+  orderCost: number;
+  marketConfidence: number;
+  favoriteConfidence: number;
+  bankroll: number;
+  realizedPnl: number;
+  openStake: number;
+};
+type ChartFormat = "usd" | "dollars" | "cents" | "percent" | "bps" | "number" | "seconds" | "scientific";
+type ChartSeries = {
+  key: keyof ChartSample;
+  label: string;
+  color: "green" | "red" | "amber" | "blue" | "purple" | "cyan";
+};
 
 const VARIANCE_FLOOR = 2.3020308442843487e-9;
 const FIXED_SHARES = 5;
@@ -97,6 +149,170 @@ const normalCdf = (x: number) => {
 };
 const money = (n: number) => `$${n.toFixed(2)}`;
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+const formatChartValue = (value: number, format: ChartFormat) => {
+  if (!Number.isFinite(value)) return "—";
+  if (format === "usd") return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  if (format === "dollars") return money(value);
+  if (format === "cents") return `${(value * 100).toFixed(1)}¢`;
+  if (format === "percent") return `${(value * 100).toFixed(1)}%`;
+  if (format === "bps") return `${value.toFixed(2)} bps`;
+  if (format === "seconds") return `${value.toFixed(1)}s`;
+  if (format === "scientific") return value.toExponential(2);
+  return value.toFixed(Math.abs(value) < 10 ? 3 : 1);
+};
+
+function MetricChart({
+  title,
+  description,
+  samples,
+  series,
+  format,
+}: {
+  title: string;
+  description: string;
+  samples: ChartSample[];
+  series: ChartSeries[];
+  format: ChartFormat;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const seriesKey = series.map((item) => `${String(item.key)}-${item.color}`).join("|");
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const draw = () => {
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      const width = Math.max(280, canvas.clientWidth);
+      const height = 190;
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
+
+      const styles = getComputedStyle(document.documentElement);
+      const muted = styles.getPropertyValue("--muted").trim();
+      const line = styles.getPropertyValue("--line").trim();
+      const colors: Record<ChartSeries["color"], string> = {
+        green: styles.getPropertyValue("--green").trim(),
+        red: styles.getPropertyValue("--red").trim(),
+        amber: styles.getPropertyValue("--amber").trim(),
+        blue: styles.getPropertyValue("--blue").trim(),
+        purple: styles.getPropertyValue("--purple").trim(),
+        cyan: styles.getPropertyValue("--cyan").trim(),
+      };
+      const left = 58;
+      const right = 12;
+      const top = 12;
+      const bottom = 24;
+      const plotWidth = width - left - right;
+      const plotHeight = height - top - bottom;
+      const values = samples.flatMap((sample) =>
+        series.map((item) => Number(sample[item.key])).filter(Number.isFinite)
+      );
+      let minimum = Math.min(...values);
+      let maximum = Math.max(...values);
+      if (!values.length) {
+        minimum = 0;
+        maximum = 1;
+      }
+      if (minimum === maximum) {
+        const padding = Math.abs(minimum) > 0 ? Math.abs(minimum) * 0.08 : 1;
+        minimum -= padding;
+        maximum += padding;
+      } else {
+        const padding = (maximum - minimum) * 0.08;
+        minimum -= padding;
+        maximum += padding;
+      }
+
+      context.font = "10px Arial";
+      context.lineWidth = 1;
+      for (let index = 0; index < 4; index += 1) {
+        const y = top + (plotHeight * index) / 3;
+        const value = maximum - ((maximum - minimum) * index) / 3;
+        context.strokeStyle = line;
+        context.beginPath();
+        context.moveTo(left, y);
+        context.lineTo(width - right, y);
+        context.stroke();
+        context.fillStyle = muted;
+        context.textAlign = "right";
+        context.textBaseline = "middle";
+        context.fillText(formatChartValue(value, format), left - 8, y);
+      }
+
+      if (samples.length < 2) {
+        context.fillStyle = muted;
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.fillText("Collecting live samples…", left + plotWidth / 2, top + plotHeight / 2);
+        return;
+      }
+
+      const start = samples[0].timestamp;
+      const end = samples.at(-1)?.timestamp ?? start + 1;
+      const xFor = (timestamp: number) => left + ((timestamp - start) / Math.max(1, end - start)) * plotWidth;
+      const yFor = (value: number) => top + ((maximum - value) / (maximum - minimum)) * plotHeight;
+
+      series.forEach((item) => {
+        context.strokeStyle = colors[item.color];
+        context.lineWidth = 2;
+        context.lineJoin = "round";
+        context.lineCap = "round";
+        context.beginPath();
+        samples.forEach((sample, index) => {
+          const value = Number(sample[item.key]);
+          const x = xFor(sample.timestamp);
+          const y = yFor(value);
+          if (index === 0) context.moveTo(x, y);
+          else context.lineTo(x, y);
+        });
+        context.stroke();
+        const latest = samples.at(-1);
+        if (latest) {
+          context.fillStyle = colors[item.color];
+          context.beginPath();
+          context.arc(xFor(latest.timestamp), yFor(Number(latest[item.key])), 3, 0, Math.PI * 2);
+          context.fill();
+        }
+      });
+
+      context.fillStyle = muted;
+      context.textBaseline = "bottom";
+      context.textAlign = "left";
+      context.fillText(new Date(start).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }), left, height);
+      context.textAlign = "right";
+      context.fillText(new Date(end).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" }), width - right, height);
+    };
+
+    draw();
+    const observer = new ResizeObserver(draw);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+    // Series definitions are represented by seriesKey so inline chart declarations do not redraw on every clock tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [format, samples, seriesKey]);
+
+  const latest = samples.at(-1);
+  return (
+    <article className="chart-card">
+      <div className="chart-heading">
+        <div><h3>{title}</h3><p>{description}</p></div>
+        <span>{samples.length} samples</span>
+      </div>
+      <canvas ref={canvasRef} className="chart-canvas" role="img" aria-label={`${title} live history chart`}>
+        Live chart for {title}
+      </canvas>
+      <div className="chart-legend">
+        {series.map((item) => (
+          <span key={String(item.key)}><i className={`chart-dot ${item.color}`} /><b>{item.label}</b> {latest ? formatChartValue(Number(latest[item.key]), format) : "—"}</span>
+        ))}
+      </div>
+    </article>
+  );
+}
 
 export default function Home() {
   const [live, setLive] = useState<LiveMarket | null>(null);
@@ -113,6 +329,8 @@ export default function Home() {
   const [stats, setStats] = useState({ total: 0, open_count: 0, wins: 0, losses: 0, recoveries: 0, open_stake: 0, realized_pnl: 0 });
   const [snapshotCount, setSnapshotCount] = useState(0);
   const [transactionFilter, setTransactionFilter] = useState<TransactionFilter>("all");
+  const [activeTab, setActiveTab] = useState<AppTab>("engine");
+  const [chartHistory, setChartHistory] = useState<ChartSample[]>([]);
   const [lastBetAt, setLastBetAt] = useState(0);
   const [clock, setClock] = useState(() => Date.now());
   const [tickHistory, setTickHistory] = useState<{ price: number; timestamp: number }[]>([]);
@@ -759,6 +977,70 @@ export default function Home() {
     openPositions: number;
   }>()).values()).sort((a, b) => b.endTime - a.endTime);
 
+  const currentChartSample = live && chainlink ? {
+    marketSlug: live.slug,
+    timestamp: live.fetchedAt,
+    btc,
+    strike,
+    marketUp,
+    rawUp: model.raw,
+    calibratedUp: model.calibrated,
+    upAsk: live.upAsk,
+    upBid: live.upBid,
+    downAsk: live.downAsk,
+    downBid: live.downBid,
+    upEdge: model.upEdge,
+    downEdge: model.downEdge,
+    selectedEdge: model.selectedEdge,
+    valueEdge: model.valueEdge,
+    momentum15,
+    momentum30,
+    momentum60,
+    upMove15,
+    downMove15,
+    upMove30,
+    downMove30,
+    upSpread: live.upAsk - live.upBid,
+    downSpread: live.downAsk - live.downBid,
+    selectedSpread: model.selectedSpread,
+    upDepth: live.upAskSize,
+    downDepth: live.downAskSize,
+    selectedDepth: model.selectedDepth,
+    choppiness: choppiness60,
+    variance,
+    qUsed: model.qUsed,
+    sigmaBps: Math.sqrt(model.qUsed) * 10_000,
+    z: model.z,
+    distanceBps: model.distance * 10_000,
+    secondsLeft: seconds,
+    dataAgeSeconds: dataAge / 1_000,
+    selectedAsk: model.selectedAsk,
+    orderCost: model.orderCost,
+    marketConfidence: model.marketConfidence,
+    favoriteConfidence: model.favoriteConfidence,
+    bankroll,
+    realizedPnl: stats.realized_pnl,
+    openStake: stats.open_stake,
+  } satisfies ChartSample : null;
+
+  useEffect(() => {
+    if (!currentChartSample) return;
+    const sample = currentChartSample;
+    const pending = window.setTimeout(() => {
+      setChartHistory((history) => {
+        const currentMarket = history.filter((item) =>
+          item.marketSlug === sample.marketSlug &&
+          item.timestamp >= sample.timestamp - 240_000
+        );
+        if (currentMarket.at(-1)?.timestamp === sample.timestamp) return currentMarket;
+        return [...currentMarket, sample];
+      });
+    }, 0);
+    return () => window.clearTimeout(pending);
+    // Chart history intentionally samples each new Polymarket quote after all model values are computed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live?.fetchedAt]);
+
   const currentSnapshot = live && chainlink ? {
     action: "snapshot",
     marketSlug: live.slug,
@@ -835,6 +1117,30 @@ export default function Home() {
           </div>
         </div>
 
+        <nav className="app-tabs" role="tablist" aria-label="WhaleMaker dashboard sections">
+          {([
+            ["engine", "Live engine", signalLabel],
+            ["analytics", "Analytics", `${chartHistory.length} samples`],
+            ["positions", "Positions", `${ongoingBets.length} open`],
+            ["ledger", "Ledger", `${transactions.length} trades`],
+          ] as [AppTab, string, string][]).map(([tab, label, badge]) => (
+            <button
+              type="button"
+              role="tab"
+              id={`${tab}-tab`}
+              aria-controls={`${tab}-panel`}
+              aria-selected={activeTab === tab}
+              className={activeTab === tab ? "active" : ""}
+              onClick={() => setActiveTab(tab)}
+              key={tab}
+            >
+              <span>{label}</span><b>{badge}</b>
+            </button>
+          ))}
+        </nav>
+
+        {activeTab === "engine" && (
+        <div className="tab-panel" id="engine-panel" role="tabpanel" aria-labelledby="engine-tab">
         <section className="market-prices" aria-label="Live Polymarket outcome prices">
           <article className="outcome-price up-price">
             <div>
@@ -895,11 +1201,124 @@ export default function Home() {
             </details>
           </section>
         </div>
+        </div>
+        )}
 
-        <section className="card ledger">
+        {activeTab === "analytics" && (
+          <section className="tab-panel analytics-panel" id="analytics-panel" role="tabpanel" aria-labelledby="analytics-tab">
+            <div className="analytics-head">
+              <div>
+                <p className="eyebrow">LIVE MODEL TELEMETRY</p>
+                <h2>Every numeric input and decision variable</h2>
+                <p>Rolling four-minute history sampled from the active Polymarket market. Charts continue collecting while you use the other tabs.</p>
+              </div>
+              <div className="analytics-status">
+                <span><small>Signal</small><b>{signalLabel}</b></span>
+                <span><small>Regime</small><b>{model.volatilityRegime}</b></span>
+                <span><small>Route</small><b>{model.entryMode}</b></span>
+                <span><small>Gate health</small><b>{qualityCount}/6</b></span>
+              </div>
+            </div>
+            <div className="chart-section-head"><span>MARKET &amp; MODEL</span><p>Reference price, crowd probability, model probability, quotes, and edge.</p></div>
+            <div className="chart-grid">
+              <MetricChart title="BTC reference vs strike" description="Chainlink BTC/USD and this game’s Polymarket strike." samples={chartHistory} format="usd" series={[
+                { key: "btc", label: "BTC", color: "green" },
+                { key: "strike", label: "Strike", color: "amber" },
+              ]} />
+              <MetricChart title="UP probability" description="Crowd midpoint, standalone Chainlink model, and blended calibration." samples={chartHistory} format="percent" series={[
+                { key: "marketUp", label: "Market", color: "blue" },
+                { key: "rawUp", label: "Raw model", color: "purple" },
+                { key: "calibratedUp", label: "Calibrated", color: "green" },
+              ]} />
+              <MetricChart title="Polymarket order book" description="Executable asks and bids for both outcomes." samples={chartHistory} format="cents" series={[
+                { key: "upAsk", label: "UP ask", color: "green" },
+                { key: "upBid", label: "UP bid", color: "cyan" },
+                { key: "downAsk", label: "DOWN ask", color: "red" },
+                { key: "downBid", label: "DOWN bid", color: "amber" },
+              ]} />
+              <MetricChart title="Fee-adjusted edge" description="Estimated edge after fees, slippage allowance, and spread penalty." samples={chartHistory} format="cents" series={[
+                { key: "upEdge", label: "UP edge", color: "green" },
+                { key: "downEdge", label: "DOWN edge", color: "red" },
+                { key: "selectedEdge", label: "Selected", color: "blue" },
+                { key: "valueEdge", label: "Value route", color: "purple" },
+              ]} />
+              <MetricChart title="Model z-score" description="Standardized strike distance after volatility and time remaining." samples={chartHistory} format="number" series={[
+                { key: "z", label: "Z-score", color: "purple" },
+              ]} />
+              <MetricChart title="Distance from strike" description="Direct Chainlink BTC distance from the current strike." samples={chartHistory} format="bps" series={[
+                { key: "distanceBps", label: "Distance bps", color: "amber" },
+              ]} />
+              <MetricChart title="Market confidence" description="Support for the selected contract and the crowd favorite." samples={chartHistory} format="percent" series={[
+                { key: "marketConfidence", label: "Selected support", color: "green" },
+                { key: "favoriteConfidence", label: "Favorite support", color: "blue" },
+              ]} />
+            </div>
+
+            <div className="chart-section-head"><span>MOMENTUM &amp; RISK</span><p>Direction confirmation, contract movement, volatility, and chop.</p></div>
+            <div className="chart-grid">
+              <MetricChart title="BTC momentum" description="Log-return momentum across the engine’s three lookbacks." samples={chartHistory} format="bps" series={[
+                { key: "momentum15", label: "15 seconds", color: "green" },
+                { key: "momentum30", label: "30 seconds", color: "blue" },
+                { key: "momentum60", label: "60 seconds", color: "purple" },
+              ]} />
+              <MetricChart title="Contract movement" description="Midpoint movement used to confirm a rising contract." samples={chartHistory} format="cents" series={[
+                { key: "upMove15", label: "UP 15s", color: "green" },
+                { key: "upMove30", label: "UP 30s", color: "cyan" },
+                { key: "downMove15", label: "DOWN 15s", color: "red" },
+                { key: "downMove30", label: "DOWN 30s", color: "amber" },
+              ]} />
+              <MetricChart title="Choppiness" description="Fraction of recent BTC direction changes; entry ceiling is 0.55." samples={chartHistory} format="number" series={[
+                { key: "choppiness", label: "60s choppiness", color: "amber" },
+              ]} />
+              <MetricChart title="Instant volatility" description="Standard deviation in basis points per square-root second." samples={chartHistory} format="bps" series={[
+                { key: "sigmaBps", label: "Sigma", color: "red" },
+              ]} />
+              <MetricChart title="Variance calibration" description="Estimated one-second variance and the floored value used by the model." samples={chartHistory} format="scientific" series={[
+                { key: "variance", label: "Estimated", color: "blue" },
+                { key: "qUsed", label: "Used", color: "purple" },
+              ]} />
+            </div>
+
+            <div className="chart-section-head"><span>EXECUTION &amp; ACCOUNT</span><p>Liquidity, timing, order cost, and paper portfolio state.</p></div>
+            <div className="chart-grid">
+              <MetricChart title="Top-of-book spread" description="UP, DOWN, and currently selected contract spreads." samples={chartHistory} format="cents" series={[
+                { key: "upSpread", label: "UP", color: "green" },
+                { key: "downSpread", label: "DOWN", color: "red" },
+                { key: "selectedSpread", label: "Selected", color: "blue" },
+              ]} />
+              <MetricChart title="Ask-side depth" description="Shares available at the best ask, including selected-side depth." samples={chartHistory} format="number" series={[
+                { key: "upDepth", label: "UP depth", color: "green" },
+                { key: "downDepth", label: "DOWN depth", color: "red" },
+                { key: "selectedDepth", label: "Selected", color: "blue" },
+              ]} />
+              <MetricChart title="Entry price" description="Selected contract ask and the resulting five-share order cost." samples={chartHistory} format="cents" series={[
+                { key: "selectedAsk", label: "Selected ask", color: "green" },
+              ]} />
+              <MetricChart title="Five-share order cost" description="Cash required for the fixed order at the selected ask." samples={chartHistory} format="dollars" series={[
+                { key: "orderCost", label: "Order cost", color: "amber" },
+              ]} />
+              <MetricChart title="Market clock & feed age" description="Seconds until settlement and Chainlink data age." samples={chartHistory} format="seconds" series={[
+                { key: "secondsLeft", label: "Time left", color: "amber" },
+                { key: "dataAgeSeconds", label: "Data age", color: "cyan" },
+              ]} />
+              <MetricChart title="Paper account" description="Available cash, realized P&L, and cash committed to open positions." samples={chartHistory} format="dollars" series={[
+                { key: "bankroll", label: "Cash", color: "green" },
+                { key: "realizedPnl", label: "Realized P&L", color: "blue" },
+                { key: "openStake", label: "Open stake", color: "amber" },
+              ]} />
+            </div>
+          </section>
+        )}
+
+        {(activeTab === "positions" || activeTab === "ledger") && (
+        <section className="card ledger tab-panel" id={`${activeTab}-panel`} role="tabpanel" aria-labelledby={`${activeTab}-tab`}>
           <div className="card-head ledger-head">
-            <div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Share transactions</h2><p className="ledger-explainer">Match BUY and SELL using the position number. P&amp;L appears on the SELL row after that position closes.</p></div>
-            <a className="csv-button" href="/api/paper?format=csv" download>↓ Download CSV</a>
+            {activeTab === "positions" ? (
+              <div><p className="eyebrow">POSITION CONTROL</p><h2>Open positions and game results</h2><p className="ledger-explainer">Track executable exit value, unrealized P&amp;L, stops, and total return for every five-minute game.</p></div>
+            ) : (
+              <div><p className="eyebrow">PERSISTENT PAPER LEDGER</p><h2>Share transactions</h2><p className="ledger-explainer">Match BUY and SELL using the position number. P&amp;L appears on the SELL row after that position closes.</p></div>
+            )}
+            {activeTab === "ledger" && <a className="csv-button" href="/api/paper?format=csv" download>↓ Download CSV</a>}
           </div>
           <div className="transaction-summary">
             <div><span>Available cash</span><strong>{money(bankroll)}</strong></div>
@@ -908,6 +1327,8 @@ export default function Home() {
             <div><span>Received from sells shown</span><strong className="positive">+{money(cashReceived)}</strong></div>
             <div><span>Total realized P&amp;L</span><strong className={stats.realized_pnl >= 0 ? "positive" : "negative"}>{stats.realized_pnl >= 0 ? "+" : "−"}{money(Math.abs(stats.realized_pnl))}</strong></div>
           </div>
+          {activeTab === "positions" && (
+          <>
           <section className="ongoing-bets" aria-labelledby="ongoing-bets-title">
             <div className="ongoing-head">
               <div><p className="eyebrow">LIVE POSITIONS</p><h3 id="ongoing-bets-title">Ongoing bets</h3></div>
@@ -953,21 +1374,25 @@ export default function Home() {
               </div>
             )}
           </section>
+          </>
+          )}
+          {activeTab === "ledger" && (
+          <>
           <div className="ledger-tabs" role="tablist" aria-label="Share transaction filters">
             <button type="button" role="tab" aria-selected={transactionFilter === "all"} className={transactionFilter === "all" ? "active" : ""} onClick={() => setTransactionFilter("all")}>All <b>{transactions.length}</b></button>
             <button type="button" role="tab" aria-selected={transactionFilter === "buy"} className={transactionFilter === "buy" ? "active" : ""} onClick={() => setTransactionFilter("buy")}>Buys <b>{buyCount}</b></button>
             <button type="button" role="tab" aria-selected={transactionFilter === "sell"} className={transactionFilter === "sell" ? "active" : ""} onClick={() => setTransactionFilter("sell")}>Sells <b>{sellCount}</b></button>
           </div>
-          {visibleTransactions.length === 0 ? (
-            <div className="empty">
-              <span>◎</span>
-              <b>No {transactionFilter === "all" ? "share transactions" : `${transactionFilter} transactions`} yet</b>
-              <p>New purchases and sales will appear here automatically.</p>
-            </div>
-          ) : (
-            <div className="table">
-              <div className="tr transaction-row header"><span>Action</span><span>Time</span><span>Position</span><span>Direction</span><span>Settlement</span><span>Price / share</span><span>Cash paid / received</span><span>Profit / loss</span></div>
-              {visibleTransactions.map((transaction) => (
+          <div className="table">
+            <div className="tr transaction-row header"><span>Action</span><span>Time</span><span>Position</span><span>Direction</span><span>Settlement</span><span>Price / share</span><span>Cash paid / received</span><span>Profit / loss</span></div>
+            {visibleTransactions.length === 0 ? (
+              <div className="empty">
+                <span>◎</span>
+                <b>No {transactionFilter === "all" ? "share transactions" : `${transactionFilter} transactions`} yet</b>
+                <p>New purchases and sales will appear here automatically.</p>
+              </div>
+            ) : (
+              visibleTransactions.map((transaction) => (
                 <div className="tr transaction-row" key={transaction.id}>
                   <span className={`trade-action ${transaction.action.toLowerCase()}`}>{transaction.action}</span>
                   <span>{new Date(transaction.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
@@ -980,11 +1405,14 @@ export default function Home() {
                   <strong className={transaction.action === "BUY" ? "negative" : "positive"}>{transaction.cashFlow >= 0 ? "+" : "−"}{money(Math.abs(transaction.cashFlow))}</strong>
                   <strong className={transaction.pnl == null ? "pending-pnl" : transaction.pnl >= 0 ? "positive" : "negative"}>{transaction.pnl == null ? "—" : `${transaction.pnl >= 0 ? "+" : "−"}${money(Math.abs(transaction.pnl))}`}</strong>
                 </div>
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
           <p className="csv-note">BUY shows what the shares cost. SELL shows what came back and the final P&amp;L versus the matching BUY. The CSV keeps the complete underlying trade record. · {snapshotCount} model samples stored.</p>
+          </>
+          )}
         </section>
+        )}
         <footer><span>Live Polymarket data · Paper execution only · No real funds at risk</span><span>Immediate self-calculated test settlement</span></footer>
       </section>
     </main>
