@@ -119,6 +119,11 @@ type ChartSeries = {
   label: string;
   color: "green" | "red" | "amber" | "blue" | "purple" | "cyan";
 };
+type ChartReferenceLine = {
+  value: number;
+  label: string;
+  color: ChartSeries["color"];
+};
 
 const VARIANCE_FLOOR = 2.3020308442843487e-9;
 const FIXED_SHARES = 5;
@@ -167,15 +172,18 @@ function MetricChart({
   samples,
   series,
   format,
+  referenceLines = [],
 }: {
   title: string;
   description: string;
   samples: ChartSample[];
   series: ChartSeries[];
   format: ChartFormat;
+  referenceLines?: ChartReferenceLine[];
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const seriesKey = series.map((item) => `${String(item.key)}-${item.color}`).join("|");
+  const referenceKey = referenceLines.map((item) => `${item.value}-${item.label}-${item.color}`).join("|");
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -211,6 +219,7 @@ function MetricChart({
       const values = samples.flatMap((sample) =>
         series.map((item) => Number(sample[item.key])).filter(Number.isFinite)
       );
+      values.push(...referenceLines.map((item) => item.value));
       let minimum = Math.min(...values);
       let maximum = Math.max(...values);
       if (!values.length) {
@@ -256,6 +265,23 @@ function MetricChart({
       const xFor = (timestamp: number) => left + ((timestamp - start) / Math.max(1, end - start)) * plotWidth;
       const yFor = (value: number) => top + ((maximum - value) / (maximum - minimum)) * plotHeight;
 
+      referenceLines.forEach((item) => {
+        const y = yFor(item.value);
+        context.save();
+        context.setLineDash([4, 4]);
+        context.strokeStyle = colors[item.color];
+        context.globalAlpha = 0.72;
+        context.beginPath();
+        context.moveTo(left, y);
+        context.lineTo(width - right, y);
+        context.stroke();
+        context.restore();
+        context.fillStyle = colors[item.color];
+        context.textAlign = "left";
+        context.textBaseline = "bottom";
+        context.fillText(item.label, left + 5, y - 3);
+      });
+
       series.forEach((item) => {
         context.strokeStyle = colors[item.color];
         context.lineWidth = 2;
@@ -291,9 +317,9 @@ function MetricChart({
     const observer = new ResizeObserver(draw);
     observer.observe(canvas);
     return () => observer.disconnect();
-    // Series definitions are represented by seriesKey so inline chart declarations do not redraw on every clock tick.
+    // Inline chart declarations are represented by stable keys so they do not redraw on every clock tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [format, samples, seriesKey]);
+  }, [format, samples, seriesKey, referenceKey]);
 
   const latest = samples.at(-1);
   return (
@@ -1219,6 +1245,31 @@ export default function Home() {
                 <span><small>Gate health</small><b>{qualityCount}/6</b></span>
               </div>
             </div>
+            <div className="chart-section-head"><span>CORE SIGNALS</span><p>CLOB consensus compared directly with the engine’s BTC calculation, momentum, chop, and volatility.</p></div>
+            <div className="chart-grid">
+              <MetricChart title="CLOB price vs calculated fair price" description="UP contract: normalized CLOB midpoint versus the Chainlink-only calculation and the blended execution fair price. DOWN is the inverse." samples={chartHistory} format="percent" series={[
+                { key: "marketUp", label: "CLOB midpoint", color: "blue" },
+                { key: "rawUp", label: "Chainlink calculation", color: "purple" },
+                { key: "calibratedUp", label: "Execution fair", color: "green" },
+              ]} />
+              <MetricChart title="BTC momentum" description="Log-return momentum across the engine’s 15, 30, and 60-second lookbacks." samples={chartHistory} format="bps" series={[
+                { key: "momentum15", label: "15 seconds", color: "green" },
+                { key: "momentum30", label: "30 seconds", color: "blue" },
+                { key: "momentum60", label: "60 seconds", color: "purple" },
+              ]} />
+              <MetricChart title="Choppiness" description="Fraction of recent BTC direction changes. The engine blocks entries above the ceiling." samples={chartHistory} format="number" referenceLines={[
+                { value: 0.55, label: "0.55 entry ceiling", color: "amber" },
+              ]} series={[
+                { key: "choppiness", label: "60s choppiness", color: "amber" },
+              ]} />
+              <MetricChart title="Instant volatility" description="Standard deviation in basis points per square-root second, with the engine’s regime boundaries." samples={chartHistory} format="bps" referenceLines={[
+                { value: 0.5, label: "MEDIUM begins", color: "amber" },
+                { value: 1.25, label: "HIGH begins", color: "red" },
+              ]} series={[
+                { key: "sigmaBps", label: "Sigma", color: "red" },
+              ]} />
+            </div>
+
             <div className="chart-section-head"><span>MARKET &amp; MODEL</span><p>Reference price, crowd probability, model probability, quotes, and edge.</p></div>
             <div className="chart-grid">
               <MetricChart title="BTC reference vs strike" description="Chainlink BTC/USD and this game’s Polymarket strike." samples={chartHistory} format="usd" series={[
@@ -1254,24 +1305,13 @@ export default function Home() {
               ]} />
             </div>
 
-            <div className="chart-section-head"><span>MOMENTUM &amp; RISK</span><p>Direction confirmation, contract movement, volatility, and chop.</p></div>
+            <div className="chart-section-head"><span>CONTRACT &amp; CALIBRATION</span><p>Contract-price confirmation and the variance values used by the probability model.</p></div>
             <div className="chart-grid">
-              <MetricChart title="BTC momentum" description="Log-return momentum across the engine’s three lookbacks." samples={chartHistory} format="bps" series={[
-                { key: "momentum15", label: "15 seconds", color: "green" },
-                { key: "momentum30", label: "30 seconds", color: "blue" },
-                { key: "momentum60", label: "60 seconds", color: "purple" },
-              ]} />
               <MetricChart title="Contract movement" description="Midpoint movement used to confirm a rising contract." samples={chartHistory} format="cents" series={[
                 { key: "upMove15", label: "UP 15s", color: "green" },
                 { key: "upMove30", label: "UP 30s", color: "cyan" },
                 { key: "downMove15", label: "DOWN 15s", color: "red" },
                 { key: "downMove30", label: "DOWN 30s", color: "amber" },
-              ]} />
-              <MetricChart title="Choppiness" description="Fraction of recent BTC direction changes; entry ceiling is 0.55." samples={chartHistory} format="number" series={[
-                { key: "choppiness", label: "60s choppiness", color: "amber" },
-              ]} />
-              <MetricChart title="Instant volatility" description="Standard deviation in basis points per square-root second." samples={chartHistory} format="bps" series={[
-                { key: "sigmaBps", label: "Sigma", color: "red" },
               ]} />
               <MetricChart title="Variance calibration" description="Estimated one-second variance and the floored value used by the model." samples={chartHistory} format="scientific" series={[
                 { key: "variance", label: "Estimated", color: "blue" },
