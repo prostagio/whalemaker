@@ -70,3 +70,21 @@ The output is the probability of an UP move over the next ten seconds. A 0.50
 threshold maps it to UP or DOWN. This is a short-horizon research forecast, not
 evidence of trade profitability: spread, fees, order latency, adverse
 selection, and calibration still have to be evaluated separately.
+
+## Latest verified production run
+
+The run trained on 3,034 stored snapshots available on 2026-07-29:
+
+- 1,035 non-overlapping labeled examples across 63 markets
+- 824 development examples and 211 examples from 13 later unseen markets
+- 56.4% held-out accuracy
+- 56.1% held-out balanced accuracy
+- 0.557 ROC AUC
+- 0.687 log loss
+- 50.5% precision and 53.8% UP recall
+
+A market-cluster bootstrap produced a broad 95% interval of approximately
+50.2%–62.6% for accuracy and 46.3%–62.6% for AUC. The sample therefore supports
+deploying the model as a measured research forecast, but it does not yet prove
+a persistent predictive edge. The dashboard remains the authoritative source
+for the latest automatically retrained metrics.
